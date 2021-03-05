@@ -57,10 +57,10 @@ module.exports = {
             'local-state/local-resolvers'
           ],
           'Development & Testing': [
+            'development-testing/developer-tooling',
             'development-testing/static-typing',
             'development-testing/testing',
             'development-testing/client-schema-mocking',
-            'development-testing/developer-tooling',
           ],
           Performance: [
             'performance/performance',
@@ -84,10 +84,8 @@ module.exports = {
           ],
           'API - Core': [
             'api/core/ApolloClient',
+            'api/cache/InMemoryCache',
             'api/core/ObservableQuery'
-          ],
-          'API - Cache': [
-            'api/cache/InMemoryCache'
           ],
           'API - React': [
             'api/react/hooks',
@@ -106,7 +104,8 @@ module.exports = {
             'api/link/apollo-link-rest',
             'api/link/apollo-link-retry',
             'api/link/apollo-link-schema',
-            'api/link/apollo-link-ws'
+            'api/link/apollo-link-ws',
+            'api/link/community-links'
           ],
         },
       },
