@@ -1,6 +1,6 @@
 {
   "name": "@apollo/client",
-  "version": "3.3.12",
+  "version": "3.3.13",
   "description": "A fully-featured caching GraphQL client.",
   "private": true,
   "keywords": [
@@ -29,7 +29,7 @@
   "bugs": {
     "url": "https://github.com/apollographql/apollo-client/issues"
   },
-  "homepage": "https://www.apollographql.com",
+  "homepage": "https://www.apollographql.com/docs/react/",
   "scripts": {
     "prebuild": "npm run clean",
     "build": "tsc",
