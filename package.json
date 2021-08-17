@@ -1,6 +1,6 @@
 {
   "name": "@apollo/client",
-  "version": "3.4.7",
+  "version": "3.4.8",
   "description": "A fully-featured caching GraphQL client.",
   "private": true,
   "keywords": [
@@ -55,7 +55,7 @@
     {
       "name": "apollo-client",
       "path": "./dist/apollo-core.cjs.min.js",
-      "maxSize": "24.6 kB"
+      "maxSize": "24.7 kB"
     }
   ],
   "engines": {
