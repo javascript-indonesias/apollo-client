@@ -1,4 +1,11 @@
-## Apollo Client 3.4.12 (not yet released)
+## Apollo Client 3.4.13 (not yet released)
+
+### Bug Fixes
+
+- Fix `componentDidUpate` typo in `withSubscription` higher-order component. <br/>
+  [@YarBez](https://github.com/YarBez) in [#7506](https://github.com/apollographql/apollo-client/pull/7506)
+
+## Apollo Client 3.4.12
 
 ### Bug Fixes
 
