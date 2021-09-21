@@ -1,9 +1,15 @@
-## Apollo Client 3.4.13 (not yet released)
+## Apollo Client 3.4.13
 
 ### Bug Fixes
 
 - Fix `componentDidUpate` typo in `withSubscription` higher-order component. <br/>
   [@YarBez](https://github.com/YarBez) in [#7506](https://github.com/apollographql/apollo-client/pull/7506)
+
+- Fix internal `canUseSymbol` import within `@apollo/client/utilities` to avoid breaking bundlers/builds. <br/>
+  [@benjamn](https://github.com/benjamn) in [#8817](https://github.com/apollographql/apollo-client/pull/8817)
+
+- Tolerate unfreezable objects like `Uint8Array` and `Buffer` in `maybeDeepFreeze`. <br/>
+  [@geekuillaume](https://github.com/geekuillaume) and [@benjamn](https://github.com/benjamn) in [#8813](https://github.com/apollographql/apollo-client/pull/8813)
 
 ## Apollo Client 3.4.12
 
