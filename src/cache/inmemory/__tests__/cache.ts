@@ -2013,6 +2013,7 @@ describe("InMemoryCache#modify", () => {
 
   it("should allow invalidation using details.INVALIDATE", () => {
     const cache = new InMemoryCache({
+      canonizeResults: true,
       typePolicies: {
         Book: {
           keyFields: ["isbn"],
@@ -2946,7 +2947,10 @@ describe("ReactiveVar and makeVar", () => {
   it("should work with resultCaching disabled (unusual)", () => {
     const { cache, nameVar, query } = makeCacheAndVar(false);
 
-    const result1 = cache.readQuery({ query });
+    const result1 = cache.readQuery({
+      query,
+      canonizeResults: true,
+    });
     expect(result1).toEqual({
       onCall: {
         __typename: "Person",
@@ -2954,14 +2958,20 @@ describe("ReactiveVar and makeVar", () => {
       },
     });
 
-    const result2 = cache.readQuery({ query });
+    const result2 = cache.readQuery({
+      query,
+      canonizeResults: true,
+    });
     expect(result2).toEqual(result1);
     expect(result2).toBe(result1);
 
     expect(nameVar()).toBe("Ben");
     expect(nameVar("Hugh")).toBe("Hugh");
 
-    const result3 = cache.readQuery({ query });
+    const result3 = cache.readQuery({
+      query,
+      canonizeResults: true,
+    });
     expect(result3).toEqual({
       onCall: {
         __typename: "Person",
@@ -3019,6 +3029,116 @@ describe("ReactiveVar and makeVar", () => {
     expect(cache["watches"].size).toBe(0);
     expect(spy).toBeCalledTimes(1);
     expect(spy).toBeCalledWith(cache);
+  });
+
+  it("should remove all watchers when cache.reset() called", () => {
+    const { cache, query, nameVar } = makeCacheAndVar(false);
+    const unwatchers: Record<string, Array<() => void>> = Object.create(null);
+    const diffCounts: Record<string, number> = Object.create(null);
+
+    function watch(id: string) {
+      const fns = unwatchers[id] || (unwatchers[id] = []);
+      fns.push(cache.watch({
+        query,
+        optimistic: true,
+        immediate: true,
+        callback() {
+          diffCounts[id] = (diffCounts[id] || 0) + 1;
+        },
+      }));
+    }
+
+    watch("a");
+    watch("b");
+    watch("c");
+    watch("a");
+    watch("d");
+
+    expect(cache["watches"].size).toBe(5);
+    expect(diffCounts).toEqual({
+      a: 2,
+      b: 1,
+      c: 1,
+      d: 1,
+    });
+
+    unwatchers.a.forEach(unwatch => unwatch());
+    unwatchers.a.length = 0;
+    expect(cache["watches"].size).toBe(3);
+
+    nameVar("Hugh");
+    expect(diffCounts).toEqual({
+      a: 2,
+      b: 2,
+      c: 2,
+      d: 2,
+    });
+
+    cache.reset();
+    expect(cache["watches"].size).toBe(0);
+
+    expect(diffCounts).toEqual({
+      a: 2,
+      b: 2,
+      c: 2,
+      d: 2,
+    });
+
+    nameVar("Brian");
+    // No change because cache.reset() called.
+    expect(diffCounts).toEqual({
+      a: 2,
+      b: 2,
+      c: 2,
+      d: 2,
+    });
+
+    cache.writeQuery({
+      query,
+      data: {
+        onCall: {
+          __typename: "Person",
+        },
+      },
+    });
+
+    watch("e");
+    watch("f");
+
+    expect(diffCounts).toEqual({
+      a: 2,
+      b: 2,
+      c: 2,
+      d: 2,
+      e: 1,
+      f: 1,
+    });
+
+    nameVar("Trevor");
+    expect(cache["watches"].size).toBe(2);
+    expect(diffCounts).toEqual({
+      a: 2,
+      b: 2,
+      c: 2,
+      d: 2,
+      e: 2,
+      f: 2,
+    });
+
+    cache.reset();
+    expect(cache["watches"].size).toBe(0);
+
+    nameVar("Danielle");
+    expect(diffCounts).toEqual({
+      a: 2,
+      b: 2,
+      c: 2,
+      d: 2,
+      e: 2,
+      f: 2,
+    });
+
+    expect(cache["watches"].size).toBe(0);
   });
 
   it("should recall forgotten vars once cache has watches again", () => {
