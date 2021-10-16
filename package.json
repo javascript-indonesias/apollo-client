@@ -100,8 +100,8 @@
     "@types/hoist-non-react-statics": "3.3.1",
     "@types/jest": "26.0.24",
     "@types/lodash": "4.14.175",
-    "@types/node": "16.10.3",
-    "@types/react": "17.0.27",
+    "@types/node": "16.11.0",
+    "@types/react": "17.0.30",
     "@types/react-dom": "17.0.2",
     "@types/recompose": "0.30.8",
     "bundlesize": "0.18.1",
@@ -126,8 +126,8 @@
     "subscriptions-transport-ws": "0.9.19",
     "terser": "5.9.0",
     "ts-jest": "26.5.6",
-    "ts-node": "10.2.1",
-    "typescript": "4.4.3",
+    "ts-node": "10.3.0",
+    "typescript": "4.4.4",
     "wait-for-observables": "1.0.3"
   },
   "publishConfig": {
