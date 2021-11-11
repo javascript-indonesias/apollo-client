@@ -1,3 +1,8 @@
+## Apollo Client 3.5.2 (2021-11-10)
+
+- Fix useMutation execute function returning non-identical execution functions when passing similar options. <br/>
+  [@brainkim](https://github.com/brainkim) in [#9093](https://github.com/apollographql/apollo-client/pull/9037)
+
 ## Apollo Client 3.5.1 (2021-11-09)
 
 - Remove npm from dependencies, and avoid referencing graphql-js enum value. <br/>
