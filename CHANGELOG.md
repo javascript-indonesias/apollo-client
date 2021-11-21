@@ -1,4 +1,23 @@
-## Apollo Client 3.5.4 (unreleased)
+## Apollo Client 3.5.4 (2021-11-19)
+
+### Notices
+
+- [Relevant if you use Apollo Client with React Native] Since Apollo Client v3.5.0, CommonJS bundles provided by `@apollo/client` use a `.cjs` file extension rather than `.cjs.js`, so Node.js won't interpret them as ECMAScript modules. While this change should be an implementation detail, it may cause problems for the [Metro bundler](https://facebook.github.io/metro/) used by React Native, whose [`resolver.sourceExts`](https://facebook.github.io/metro/docs/configuration#sourceexts) configuration does not include the `cjs` extension by default.
+
+  As a workaround until [this issue](https://github.com/facebook/metro/issues/535) is resolved, you can configure Metro to understand the `.cjs` file extension by creating a `metro.config.js` file in the root of your React Native project:
+  ```js
+  const { getDefaultConfig } = require("metro-config");
+  const { resolver: defaultResolver } = getDefaultConfig.getDefaultValues();
+  exports.resolver = {
+    ...defaultResolver,
+    sourceExts: [
+      ...defaultResolver.sourceExts,
+      "cjs",
+    ],
+  };
+  ```
+
+### Improvements
 
 - Restore the ability to pass `onError()` and `onCompleted()` to the mutation execution function. <br/> [@brainkim](https://github.com/brainkim) in [#9076](https://github.com/apollographql/apollo-client/pull/9076)
 
@@ -6,15 +25,7 @@
   ```
   The request 'ts-invariant/process' failed to resolve only because it was resolved as fully specified
   ```
-  by ensuring
-  ```js
-  import { remove } from 'ts-invariant/process'
-  ```
-  is internally written to
-  ```js
-  import { remove } from 'ts-invariant/process/index.js'
-  ```
-  in the ECMAScript module `@apollo/client/utilities/globals/fix-graphql.js`. <br/>
+  by ensuring `import ... from 'ts-invariant/process'` is internally written to `import ... from 'ts-invariant/process/index.js'`. <br/>
   [@benjamn](https://github.com/benjamn) in [#9083](https://github.com/apollographql/apollo-client/pull/9083)
 
 ## Apollo Client 3.5.3 (2021-11-17)
