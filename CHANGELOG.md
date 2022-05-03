@@ -1,3 +1,25 @@
+## Apollo Client 3.6.3 (unreleased)
+
+### Bug Fixes
+
+- Simplify `useQuery(query, { defaultOptions })` default options processing in order to fix bug where `skip: true` queries failed to execute upon switching to `skip: false`. <br/>
+  [@benjamn](https://github.com/benjamn) in [#9665](https://github.com/apollographql/apollo-client/pull/9665)
+
+- Add tests of skipping/unskipping and `useLazyQuery` with `defaultOptions`, and fix a bug causing duplicate requests. <br/>
+  [@benjamn](https://github.com/benjamn) in [#9666](https://github.com/apollographql/apollo-client/pull/9666)
+
+## Apollo Client 3.6.2 (2022-05-02)
+
+### Bug Fixes
+
+- Pass `getServerSnapshot` function to `useSyncExternalStore` in addition to `getSnapshot`, though the two functions behave identically. This change should fix/unbreak React 18 server rendering. <br/>
+  [@hungphongbk](https://github.com/hungphongbk) in [#9652](https://github.com/apollographql/apollo-client/pull/9652)
+
+### Improvements
+
+- Consider `networkError.result.errors` in addition to `result.errors` in `PersistedQueryLink`. <br/>
+  [@redaid113](https://github.com/redaid113) and [@benjamn](https://github.com/benjamn) in [#9410](https://github.com/apollographql/apollo-client/pull/9410)
+
 ## Apollo Client 3.6.1 (2022-04-28)
 
 ### Bug Fixes
