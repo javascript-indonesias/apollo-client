@@ -1,3 +1,15 @@
+## Apollo Client 3.6.4 (unreleased)
+
+### Bug Fixes
+
+- Guarantee `Concast` cleanup without `Observable cancelled prematurely` rejection, potentially solving long-standing issues involving that error. <br/>
+  [@benjamn](https://github.com/benjamn) in [#9701](https://github.com/apollographql/apollo-client/pull/9701)
+
+### Improvements
+
+- Internalize `useSyncExternalStore` shim, for more control than `use-sync-external-store` provides, fixing some React Native issues. <br/>
+  [@benjamn](https://github.com/benjamn) in [#9675](https://github.com/apollographql/apollo-client/pull/9675)
+
 ## Apollo Client 3.6.3 (unreleased)
 
 ### Bug Fixes
