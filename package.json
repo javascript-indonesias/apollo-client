@@ -18,7 +18,8 @@
   "types": "./dist/index.d.ts",
   "sideEffects": false,
   "react-native": {
-    "./dist/cache/inmemory/fixPolyfills.js": "./dist/cache/inmemory/fixPolyfills.native.js"
+    "./dist/cache/inmemory/fixPolyfills.js": "./dist/cache/inmemory/fixPolyfills.native.js",
+    "react-dom/server": false
   },
   "repository": {
     "type": "git",
@@ -57,7 +58,7 @@
     {
       "name": "apollo-client",
       "path": "./dist/apollo-client.min.cjs",
-      "maxSize": "29.63kB"
+      "maxSize": "29.66kB"
     }
   ],
   "engines": {
