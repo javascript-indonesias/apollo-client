@@ -2,6 +2,8 @@
 
 ### Improvements
 
+- Add array examples to reactive variable documentation. <br />
+  [@larrymyers](https://github.com/larrymyers) in [#10235](https://github.com/apollographql/apollo-client/pull/10235)
 - Additional documentation for managing local state
   [@bignimbus](https://github.com/bignimbus) in [#10282](https://github.com/apollographql/apollo-client/pull/10282)
 - Only show dev tools suggestion in the console when `connectToDevTools` is `true`. <br/>
@@ -12,6 +14,8 @@
   [@aaronadamsCA](https://github.com/aaronadamsCA) in [#9323](https://github.com/apollographql/apollo-client/pull/9323)
 - docs: displays the error correctly<br/>
   [@ctesniere](https://github.com/ctesniere) in [#10275](https://github.com/apollographql/apollo-client/pull/10275)
+- Export a `ModifierDetails` type for the `details` parameter of a `Modifier` function. <br />
+  [@KeithGillette](https://github.com/KeithGillette) in [#7133](https://github.com/apollographql/apollo-client/pull/7133)
 
 ## Apollo Client 3.7.1 (2022-10-20)
 
