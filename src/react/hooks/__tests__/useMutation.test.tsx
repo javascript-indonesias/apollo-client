@@ -9,13 +9,19 @@ import fetchMock from "fetch-mock";
 import { ApolloClient, ApolloLink, ApolloQueryResult, Cache, NetworkStatus, Observable, ObservableQuery, TypedDocumentNode } from '../../../core';
 import { InMemoryCache } from '../../../cache';
 import { itAsync, MockedProvider, MockSubscriptionLink, mockSingleLink, subscribeAndCount } from '../../../testing';
-import { ApolloProvider } from '../../context';
+import { ApolloProvider, resetApolloContext } from '../../context';
 import { useQuery } from '../useQuery';
 import { useMutation } from '../useMutation';
 import { BatchHttpLink } from '../../../link/batch-http';
 import { FetchResult } from '../../../link/core';
 
 describe('useMutation Hook', () => {
+  beforeEach(() => {
+    jest.restoreAllMocks();
+  });
+  afterEach(() => {
+    resetApolloContext();
+  });
   interface Todo {
     id: number;
     description: string;
@@ -653,6 +659,54 @@ describe('useMutation Hook', () => {
       expect(onError).toHaveBeenCalledTimes(0);
     });
 
+    it('prefers the onCompleted handler passed to the execution function rather than the hook', async () => {
+      const CREATE_TODO_DATA = {
+        createTodo: {
+          id: 1,
+          priority: 'Low',
+          description: 'Get milk!',
+          __typename: 'Todo',
+        },
+      };
+      const variables = {
+        priority: 'Low',
+        description: 'Get milk.',
+      }
+      const mocks = [
+        {
+          request: {
+            query: CREATE_TODO_MUTATION,
+            variables,
+          },
+          result: {
+            data: CREATE_TODO_DATA
+          },
+        }
+      ];
+
+      const hookOnCompleted = jest.fn();
+
+      const { result } = renderHook(
+        () => useMutation(CREATE_TODO_MUTATION, { onCompleted: hookOnCompleted }),
+        {
+          wrapper: ({ children }) => (
+            <MockedProvider mocks={mocks}>
+              {children}
+            </MockedProvider>
+          )
+        },
+      );
+
+      const [createTodo] = result.current;
+      const onCompleted = jest.fn();
+      await act(async () => {
+        await createTodo({ variables, onCompleted });
+      });
+
+      expect(onCompleted).toHaveBeenCalledTimes(1);
+      expect(hookOnCompleted).not.toHaveBeenCalled();
+    });
+
     it('should allow passing an onError handler to the execution function', async () => {
       const errors = [new GraphQLError(CREATE_TODO_ERROR)];
       const variables = {
@@ -704,6 +758,46 @@ describe('useMutation Hook', () => {
       expect(onCompleted).toHaveBeenCalledTimes(0);
       expect(onError).toHaveBeenCalledTimes(1);
       expect(onError).toHaveBeenCalledWith(errors[0], expect.objectContaining({variables}));
+    });
+
+    it('prefers the onError handler passed to the execution function instead of the hook', async () => {
+      const variables = {
+        priority: 'Low',
+        description: 'Get milk.',
+      }
+      const mocks = [
+        {
+          request: {
+            query: CREATE_TODO_MUTATION,
+            variables,
+          },
+          result: {
+            errors: [new GraphQLError(CREATE_TODO_ERROR)],
+          },
+        }
+      ];
+
+      const hookOnError = jest.fn();
+
+      const { result } = renderHook(
+        () => useMutation(CREATE_TODO_MUTATION, { onError: hookOnError }),
+        {
+          wrapper: ({ children }) => (
+            <MockedProvider mocks={mocks}>
+              {children}
+            </MockedProvider>
+          )
+        },
+      );
+
+      const [createTodo] = result.current;
+      const onError = jest.fn();
+      await act(async () => {
+        await createTodo({ variables, onError });
+      });
+
+      expect(onError).toHaveBeenCalledTimes(1);
+      expect(hookOnError).not.toHaveBeenCalled();
     });
 
     it('should allow updating onError while mutation is executing', async () => {
@@ -1369,7 +1463,7 @@ describe('useMutation Hook', () => {
       }).then(resolve, reject);
     });
 
-    itAsync('should be called with the provided context', async (resolve, reject) => {
+    it('should be called with the provided context', async () => {
       const optimisticResponse = {
         __typename: 'Mutation',
         createTodo: {
@@ -1423,10 +1517,10 @@ describe('useMutation Hook', () => {
         </MockedProvider>
       );
 
-      return waitFor(() => {
+      await waitFor(() => {
         expect(contextFn).toHaveBeenCalledTimes(2);
-        expect(contextFn).toHaveBeenCalledWith(context);
-      }).then(resolve, reject);
+      });
+      expect(contextFn).toHaveBeenCalledWith(context);
     });
   });
 
@@ -2211,7 +2305,7 @@ describe('useMutation Hook', () => {
       render(<ApolloProvider client={client}><Test /></ApolloProvider>);
 
       await waitFor(() => screen.findByText('item 1'));
-      await waitFor(() => userEvent.click(screen.getByRole('button', { name: /mutate/i })));
+      await userEvent.click(screen.getByRole('button', { name: /mutate/i }));
       await waitFor(() => screen.findByText('item 3'));
     });
   });
@@ -2370,11 +2464,21 @@ describe('useMutation Hook', () => {
         fetchResult = await createTodo({ variables });
       });
 
-      expect(fetchResult.errors.message).toBe(CREATE_TODO_ERROR);
-      expect(fetchResult.data).toBe(undefined);
-      expect(onError).toHaveBeenCalledTimes(1);
-      expect(onError.mock.calls[0][0].message).toBe(CREATE_TODO_ERROR);
-      expect(errorSpy).not.toHaveBeenCalled();
+      await waitFor(() => {
+        expect(fetchResult.errors.message).toBe(CREATE_TODO_ERROR);
+      });
+      await waitFor(() => {
+        expect(fetchResult.data).toBe(undefined);
+      });
+      await waitFor(() => {
+        expect(onError).toHaveBeenCalledTimes(1);
+      });
+      await waitFor(() => {
+        expect(onError.mock.calls[0][0].message).toBe(CREATE_TODO_ERROR);
+      });
+      await waitFor(() => {
+        expect(errorSpy).not.toHaveBeenCalled();
+      });
       errorSpy.mockRestore();
     });
     it('calls the update function with the final merged result data', async () => {
@@ -2455,8 +2559,10 @@ describe('useMutation Hook', () => {
         // but we only care about variables here
         expect.objectContaining({ variables })
       );
+      await waitFor(() => {
+        expect(errorSpy).not.toHaveBeenCalled();
+      });
 
-      expect(errorSpy).not.toHaveBeenCalled();
       errorSpy.mockRestore();
     });
   });
