@@ -1,5 +1,21 @@
 # @apollo/client
 
+## 3.9.4
+
+### Patch Changes
+
+- [#11403](https://github.com/apollographql/apollo-client/pull/11403) [`b0c4f3a`](https://github.com/apollographql/apollo-client/commit/b0c4f3ad8198981a229b46dc430345a76e577e9c) Thanks [@jerelmiller](https://github.com/jerelmiller)! - Fix issue in `useLazyQuery` that results in a double network call when calling the execute function with no arguments after having called it previously with another set of arguments.
+
+- [#11576](https://github.com/apollographql/apollo-client/pull/11576) [`e855d00`](https://github.com/apollographql/apollo-client/commit/e855d00447e4d9ae478d98f6796d842ef6cc76d1) Thanks [@alessbell](https://github.com/alessbell)! - Revert PR [#11202](https://github.com/apollographql/apollo-client/pull/11202) to fix caching bug reported in [#11560](https://github.com/apollographql/apollo-client/issues/11560)
+
+## 3.9.3
+
+### Patch Changes
+
+- [#11525](https://github.com/apollographql/apollo-client/pull/11525) [`dce923a`](https://github.com/apollographql/apollo-client/commit/dce923ae57eb6b6d889e2980635cb90e2c6cbca3) Thanks [@vezaynk](https://github.com/vezaynk)! - Allows passing in client via options to useFragment
+
+- [#11558](https://github.com/apollographql/apollo-client/pull/11558) [`8cba16f`](https://github.com/apollographql/apollo-client/commit/8cba16f041609443111ecf5fb58faea1b3e79569) Thanks [@alessbell](https://github.com/alessbell)! - Fix [`unbound-method`](https://github.com/apollographql/apollo-client/issues/11554) linter error on ObservableQuery methods exposed on useQuery's QueryResult object.
+
 ## 3.9.2
 
 ### Patch Changes
