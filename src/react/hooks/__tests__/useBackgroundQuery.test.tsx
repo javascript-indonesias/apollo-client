@@ -410,7 +410,10 @@ it("auto resubscribes when mounting useReadQuery after naturally disposed by use
   await wait(0);
 
   expect(client.getObservableQueries().size).toBe(0);
-  expect(client).not.toHaveSuspenseCacheEntryUsing(query);
+  // We retain the cache entry in useBackgroundQuery to avoid recreating the
+  // queryRef if useBackgroundQuery rerenders before useReadQuery is mounted
+  // again.
+  expect(client).toHaveSuspenseCacheEntryUsing(query);
 
   await act(() => user.click(toggleButton));
 
@@ -443,6 +446,92 @@ it("auto resubscribes when mounting useReadQuery after naturally disposed by use
       networkStatus: NetworkStatus.ready,
     });
   }
+
+  await expect(Profiler).not.toRerender({ timeout: 50 });
+});
+
+it("does not recreate queryRef and execute a network request when rerendering useBackgroundQuery after queryRef is disposed", async () => {
+  const { query } = setupSimpleCase();
+  const user = userEvent.setup();
+  let fetchCount = 0;
+  const client = new ApolloClient({
+    link: new ApolloLink(() => {
+      fetchCount++;
+
+      return new Observable((observer) => {
+        setTimeout(() => {
+          observer.next({ data: { greeting: "Hello" } });
+          observer.complete();
+        }, 20);
+      });
+    }),
+    cache: new InMemoryCache(),
+  });
+
+  const Profiler = createDefaultProfiler<SimpleCaseData>();
+  const { SuspenseFallback, ReadQueryHook } =
+    createDefaultTrackedComponents(Profiler);
+
+  function App() {
+    useTrackRenders();
+    const [show, setShow] = React.useState(true);
+    // Use a fetchPolicy of no-cache to ensure we can more easily track if
+    // another network request was made
+    const [queryRef] = useBackgroundQuery(query, { fetchPolicy: "no-cache" });
+
+    return (
+      <>
+        <button onClick={() => setShow((show) => !show)}>Toggle</button>
+        <Suspense fallback={<SuspenseFallback />}>
+          {show && <ReadQueryHook queryRef={queryRef} />}
+        </Suspense>
+      </>
+    );
+  }
+
+  const { rerender } = renderWithClient(<App />, { client, wrapper: Profiler });
+
+  const toggleButton = screen.getByText("Toggle");
+
+  {
+    const { renderedComponents } = await Profiler.takeRender();
+
+    expect(renderedComponents).toStrictEqual([App, SuspenseFallback]);
+  }
+
+  {
+    const { snapshot } = await Profiler.takeRender();
+
+    expect(snapshot.result).toEqual({
+      data: { greeting: "Hello" },
+      error: undefined,
+      networkStatus: NetworkStatus.ready,
+    });
+  }
+
+  await act(() => user.click(toggleButton));
+  await Profiler.takeRender();
+  await wait(0);
+
+  rerender(<App />);
+  await Profiler.takeRender();
+
+  expect(fetchCount).toBe(1);
+
+  await act(() => user.click(toggleButton));
+
+  {
+    const { snapshot, renderedComponents } = await Profiler.takeRender();
+
+    expect(renderedComponents).toStrictEqual([App, ReadQueryHook]);
+    expect(snapshot.result).toEqual({
+      data: { greeting: "Hello" },
+      error: undefined,
+      networkStatus: NetworkStatus.ready,
+    });
+  }
+
+  expect(fetchCount).toBe(1);
 
   await expect(Profiler).not.toRerender({ timeout: 50 });
 });
@@ -2009,6 +2098,192 @@ it("does not make network requests when `skipToken` is used", async () => {
       networkStatus: NetworkStatus.ready,
     });
   }
+});
+
+it("does not make network requests when `skipToken` is used in strict mode", async () => {
+  const { query, mocks } = setupSimpleCase();
+  const Profiler = createDefaultProfiler<SimpleCaseData>();
+  const { SuspenseFallback, ReadQueryHook } =
+    createDefaultTrackedComponents(Profiler);
+  const user = userEvent.setup();
+
+  let fetchCount = 0;
+
+  const link = new ApolloLink((operation) => {
+    return new Observable((observer) => {
+      fetchCount++;
+
+      const mock = mocks.find(({ request }) =>
+        equal(request.query, operation.query)
+      );
+
+      if (!mock) {
+        throw new Error("Could not find mock for operation");
+      }
+
+      observer.next((mock as any).result);
+      observer.complete();
+    });
+  });
+
+  const client = new ApolloClient({
+    link,
+    cache: new InMemoryCache(),
+  });
+
+  function App() {
+    useTrackRenders();
+    const [skip, setSkip] = React.useState(true);
+    const [queryRef] = useBackgroundQuery(query, skip ? skipToken : undefined);
+
+    return (
+      <>
+        <button onClick={() => setSkip((skip) => !skip)}>Toggle skip</button>
+        <Suspense fallback={<SuspenseFallback />}>
+          {queryRef && <ReadQueryHook queryRef={queryRef} />}
+        </Suspense>
+      </>
+    );
+  }
+
+  renderWithClient(<App />, {
+    client,
+    wrapper: ({ children }) => (
+      <React.StrictMode>
+        <Profiler>{children}</Profiler>
+      </React.StrictMode>
+    ),
+  });
+
+  // initial skipped result
+  await Profiler.takeRender();
+  expect(fetchCount).toBe(0);
+
+  // Toggle skip to `false`
+  await act(() => user.click(screen.getByText("Toggle skip")));
+  await Profiler.takeRender();
+
+  {
+    const { snapshot } = await Profiler.takeRender();
+
+    expect(snapshot.result).toEqual({
+      data: { greeting: "Hello" },
+      error: undefined,
+      networkStatus: NetworkStatus.ready,
+    });
+  }
+
+  expect(fetchCount).toBe(1);
+
+  // Toggle skip to `true`
+  await act(() => user.click(screen.getByText("Toggle skip")));
+
+  {
+    const { snapshot } = await Profiler.takeRender();
+
+    expect(snapshot.result).toEqual({
+      data: { greeting: "Hello" },
+      error: undefined,
+      networkStatus: NetworkStatus.ready,
+    });
+  }
+
+  expect(fetchCount).toBe(1);
+
+  await expect(Profiler).not.toRerender();
+});
+
+it("does not make network requests when using `skip` option in strict mode", async () => {
+  const { query, mocks } = setupSimpleCase();
+  const Profiler = createDefaultProfiler<SimpleCaseData>();
+  const { SuspenseFallback, ReadQueryHook } =
+    createDefaultTrackedComponents(Profiler);
+  const user = userEvent.setup();
+
+  let fetchCount = 0;
+
+  const link = new ApolloLink((operation) => {
+    return new Observable((observer) => {
+      fetchCount++;
+
+      const mock = mocks.find(({ request }) =>
+        equal(request.query, operation.query)
+      );
+
+      if (!mock) {
+        throw new Error("Could not find mock for operation");
+      }
+
+      observer.next((mock as any).result);
+      observer.complete();
+    });
+  });
+
+  const client = new ApolloClient({
+    link,
+    cache: new InMemoryCache(),
+  });
+
+  function App() {
+    useTrackRenders();
+    const [skip, setSkip] = React.useState(true);
+    const [queryRef] = useBackgroundQuery(query, { skip });
+
+    return (
+      <>
+        <button onClick={() => setSkip((skip) => !skip)}>Toggle skip</button>
+        <Suspense fallback={<SuspenseFallback />}>
+          {queryRef && <ReadQueryHook queryRef={queryRef} />}
+        </Suspense>
+      </>
+    );
+  }
+
+  renderWithClient(<App />, {
+    client,
+    wrapper: ({ children }) => (
+      <React.StrictMode>
+        <Profiler>{children}</Profiler>
+      </React.StrictMode>
+    ),
+  });
+
+  // initial skipped result
+  await Profiler.takeRender();
+  expect(fetchCount).toBe(0);
+
+  // Toggle skip to `false`
+  await act(() => user.click(screen.getByText("Toggle skip")));
+  await Profiler.takeRender();
+
+  {
+    const { snapshot } = await Profiler.takeRender();
+
+    expect(snapshot.result).toEqual({
+      data: { greeting: "Hello" },
+      error: undefined,
+      networkStatus: NetworkStatus.ready,
+    });
+  }
+
+  expect(fetchCount).toBe(1);
+
+  // Toggle skip to `true`
+  await act(() => user.click(screen.getByText("Toggle skip")));
+
+  {
+    const { snapshot } = await Profiler.takeRender();
+
+    expect(snapshot.result).toEqual({
+      data: { greeting: "Hello" },
+      error: undefined,
+      networkStatus: NetworkStatus.ready,
+    });
+  }
+
+  expect(fetchCount).toBe(1);
+
+  await expect(Profiler).not.toRerender();
 });
 
 it("result is referentially stable", async () => {
@@ -3671,6 +3946,79 @@ it('does not suspend deferred queries with partial data in the cache and using a
 
   await expect(Profiler).not.toRerender({ timeout: 50 });
 });
+
+it.each<SuspenseQueryHookFetchPolicy>([
+  "cache-first",
+  "network-only",
+  "cache-and-network",
+])(
+  'responds to cache updates in strict mode while using a "%s" fetch policy',
+  async (fetchPolicy) => {
+    const { query, mocks } = setupSimpleCase();
+
+    const client = new ApolloClient({
+      cache: new InMemoryCache(),
+      link: new MockLink(mocks),
+    });
+
+    const Profiler = createDefaultProfiler<SimpleCaseData>();
+    const { SuspenseFallback, ReadQueryHook } =
+      createDefaultTrackedComponents(Profiler);
+
+    function App() {
+      useTrackRenders();
+      const [queryRef] = useBackgroundQuery(query, { fetchPolicy });
+
+      return (
+        <Suspense fallback={<SuspenseFallback />}>
+          <ReadQueryHook queryRef={queryRef} />
+        </Suspense>
+      );
+    }
+
+    renderWithClient(<App />, {
+      client,
+      wrapper: ({ children }) => (
+        <React.StrictMode>
+          <Profiler>{children}</Profiler>
+        </React.StrictMode>
+      ),
+    });
+
+    {
+      const { renderedComponents } = await Profiler.takeRender();
+
+      expect(renderedComponents).toStrictEqual([App, SuspenseFallback]);
+    }
+
+    {
+      const { snapshot } = await Profiler.takeRender();
+
+      expect(snapshot.result).toEqual({
+        data: { greeting: "Hello" },
+        error: undefined,
+        networkStatus: NetworkStatus.ready,
+      });
+    }
+
+    client.writeQuery({
+      query,
+      data: { greeting: "Updated hello" },
+    });
+
+    {
+      const { snapshot } = await Profiler.takeRender();
+
+      expect(snapshot.result).toEqual({
+        data: { greeting: "Updated hello" },
+        error: undefined,
+        networkStatus: NetworkStatus.ready,
+      });
+    }
+
+    await expect(Profiler).not.toRerender({ timeout: 50 });
+  }
+);
 
 describe("refetch", () => {
   it("re-suspends when calling `refetch`", async () => {
