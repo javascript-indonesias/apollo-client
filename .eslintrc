@@ -25,7 +25,10 @@
       "excludedFiles": ["**/__tests__/**/*.*", "*.d.ts"],
       "extends": ["plugin:react-hooks/recommended"],
       "parserOptions": {
-        "project": "./tsconfig.json"
+        "project": [
+          "./tsconfig.json",
+          "./scripts/codemods/data-masking/tsconfig.json"
+        ]
       },
       "plugins": ["eslint-plugin-react-compiler"],
       "rules": {
@@ -89,7 +92,10 @@
       "rules": {
         "testing-library/prefer-user-event": "error",
         "testing-library/no-wait-for-multiple-assertions": "off",
-        "local-rules/require-using-disposable": "error"
+        "local-rules/require-using-disposable": "error",
+        "local-rules/require-disable-act-environment": "error",
+        "local-rules/forbid-act-in-disabled-act-environment": "error",
+        "@typescript-eslint/no-floating-promises": "warn"
       }
     }
   ],

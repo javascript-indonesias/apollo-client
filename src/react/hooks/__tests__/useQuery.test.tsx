@@ -7,7 +7,7 @@ import { render, screen, waitFor, renderHook } from "@testing-library/react";
 import {
   ApolloClient,
   ApolloError,
-  ApolloQueryResult,
+  FetchPolicy,
   NetworkStatus,
   OperationVariables,
   TypedDocumentNode,
@@ -30,19 +30,16 @@ import {
 import { QueryResult } from "../../types/types";
 import { useQuery } from "../useQuery";
 import { useMutation } from "../useMutation";
-import {
-  disableActWarnings,
-  PaginatedCaseData,
-  setupPaginatedCase,
-  spyOnConsole,
-} from "../../../testing/internal";
+import { setupPaginatedCase, spyOnConsole } from "../../../testing/internal";
 import { useApolloClient } from "../useApolloClient";
 import { useLazyQuery } from "../useLazyQuery";
 import { mockFetchQuery } from "../../../core/__tests__/ObservableQuery";
 import { InvariantError } from "../../../utilities/globals";
+import { Masked, MaskedDocumentNode } from "../../../masking";
 import {
   createRenderStream,
   renderHookToSnapshotStream,
+  disableActEnvironment,
 } from "@testing-library/react-render-stream";
 
 const IS_REACT_17 = React.version.startsWith("17");
@@ -598,7 +595,7 @@ describe("useQuery Hook", () => {
 
       const mutate = result.current[1][0];
       act(() => {
-        mutate({ variables: { name: "world 2" } });
+        void mutate({ variables: { name: "world 2" } });
         setName("world 2");
       });
 
@@ -792,7 +789,8 @@ describe("useQuery Hook", () => {
         link,
         cache: new InMemoryCache(),
       });
-      const { takeSnapshot, rerender } = renderHookToSnapshotStream(
+      using _disabledAct = disableActEnvironment();
+      const { takeSnapshot, rerender } = await renderHookToSnapshotStream(
         () => [useQuery(query1, { fetchPolicy: "no-cache" }), useQuery(query2)],
         {
           wrapper: ({ children }) => (
@@ -825,7 +823,7 @@ describe("useQuery Hook", () => {
         expect(result1.data).toStrictEqual(allThingsData);
       }
 
-      rerender({});
+      await rerender({});
       {
         const [result0, result1] = await takeSnapshot();
         expect(result0.loading).toBe(false);
@@ -1568,14 +1566,16 @@ describe("useQuery Hook", () => {
 
       checkObservableQueries(1);
 
-      await result.current.reobserve().then((result) => {
-        expect(result.loading).toBe(false);
-        expect(result.loading).toBe(false);
-        expect(result.networkStatus).toBe(NetworkStatus.ready);
-        expect(result.data).toEqual({
-          linkCount: 2,
-        });
-      });
+      await act(() =>
+        result.current.reobserve().then((result) => {
+          expect(result.loading).toBe(false);
+          expect(result.loading).toBe(false);
+          expect(result.networkStatus).toBe(NetworkStatus.ready);
+          expect(result.data).toEqual({
+            linkCount: 2,
+          });
+        })
+      );
 
       await waitFor(() => {
         expect(result.current.loading).toBe(false);
@@ -1697,7 +1697,8 @@ describe("useQuery Hook", () => {
       ];
 
       const cache = new InMemoryCache();
-      const { takeSnapshot, rerender } = renderHookToSnapshotStream(
+      using _disabledAct = disableActEnvironment();
+      const { takeSnapshot, rerender } = await renderHookToSnapshotStream(
         ({ skip }: { skip?: boolean }) =>
           useQuery(query, { pollInterval: 10, skip }),
         {
@@ -1720,7 +1721,7 @@ describe("useQuery Hook", () => {
         expect(result.data).toEqual({ hello: "world 1" });
       }
 
-      rerender({ skip: true });
+      await rerender({ skip: true });
       {
         const snapshot = await takeSnapshot();
         expect(snapshot.loading).toBe(false);
@@ -1729,7 +1730,7 @@ describe("useQuery Hook", () => {
 
       await expect(takeSnapshot).not.toRerender({ timeout: 100 });
 
-      rerender({ skip: false });
+      await rerender({ skip: false });
       {
         const result = await takeSnapshot();
         expect(result.loading).toBe(false);
@@ -1829,7 +1830,8 @@ describe("useQuery Hook", () => {
         </MockedProvider>
       );
 
-      const { takeSnapshot, unmount } = renderHookToSnapshotStream(
+      using _disabledAct = disableActEnvironment();
+      const { takeSnapshot, unmount } = await renderHookToSnapshotStream(
         () => useQuery(query, { pollInterval: 20 }),
         { wrapper }
       );
@@ -1911,7 +1913,8 @@ describe("useQuery Hook", () => {
         cache,
       });
 
-      const { takeSnapshot, unmount } = renderHookToSnapshotStream(
+      using _disabledAct = disableActEnvironment();
+      const { takeSnapshot, unmount } = await renderHookToSnapshotStream(
         () =>
           useQuery(query, {
             pollInterval: 10,
@@ -2067,7 +2070,8 @@ describe("useQuery Hook", () => {
 
       const client = new ApolloClient({ link, cache });
 
-      const { takeSnapshot, unmount } = renderHookToSnapshotStream(
+      using _disabledAct = disableActEnvironment();
+      const { takeSnapshot, unmount } = await renderHookToSnapshotStream(
         () =>
           useQuery(query, {
             pollInterval: 10,
@@ -3056,7 +3060,7 @@ describe("useQuery Hook", () => {
       await new Promise((resolve) => setTimeout(resolve));
       expect(onError).toHaveBeenCalledTimes(1);
 
-      result.current.refetch();
+      await act(async () => void result.current.refetch());
       await waitFor(
         () => {
           expect(result.current.loading).toBe(true);
@@ -3549,10 +3553,12 @@ describe("useQuery Hook", () => {
         </MockedProvider>
       );
 
-      const { takeSnapshot, getCurrentSnapshot } = renderHookToSnapshotStream(
-        () => useQuery(query, { notifyOnNetworkStatusChange: true }),
-        { wrapper }
-      );
+      using _disabledAct = disableActEnvironment();
+      const { takeSnapshot, getCurrentSnapshot } =
+        await renderHookToSnapshotStream(
+          () => useQuery(query, { notifyOnNetworkStatusChange: true }),
+          { wrapper }
+        );
 
       {
         const result = await takeSnapshot();
@@ -3692,10 +3698,12 @@ describe("useQuery Hook", () => {
         </MockedProvider>
       );
 
-      const { takeSnapshot, getCurrentSnapshot } = renderHookToSnapshotStream(
-        () => useQuery(query, { notifyOnNetworkStatusChange: true }),
-        { wrapper }
-      );
+      using _disabledAct = disableActEnvironment();
+      const { takeSnapshot, getCurrentSnapshot } =
+        await renderHookToSnapshotStream(
+          () => useQuery(query, { notifyOnNetworkStatusChange: true }),
+          { wrapper }
+        );
 
       {
         const result = await takeSnapshot();
@@ -3710,7 +3718,7 @@ describe("useQuery Hook", () => {
         expect(result.error).toBeInstanceOf(ApolloError);
         expect(result.error!.message).toBe("same error");
       }
-      getCurrentSnapshot().refetch();
+      await getCurrentSnapshot().refetch();
 
       {
         const result = await takeSnapshot();
@@ -3995,7 +4003,9 @@ describe("useQuery Hook", () => {
       );
       expect(result.current.networkStatus).toBe(NetworkStatus.ready);
       expect(result.current.data).toEqual({ letters: ab });
-      result.current.fetchMore({ variables: { limit: 2 } });
+      await act(
+        async () => void result.current.fetchMore({ variables: { limit: 2 } })
+      );
 
       expect(result.current.loading).toBe(false);
       await waitFor(
@@ -4082,15 +4092,20 @@ describe("useQuery Hook", () => {
 
       const client = new ApolloClient({ cache: new InMemoryCache(), link });
 
-      const { takeSnapshot, getCurrentSnapshot } = renderHookToSnapshotStream(
-        () =>
-          useQuery(query, { fetchPolicy: "no-cache", variables: { limit: 2 } }),
-        {
-          wrapper: ({ children }) => (
-            <ApolloProvider client={client}>{children}</ApolloProvider>
-          ),
-        }
-      );
+      using _disabledAct = disableActEnvironment();
+      const { takeSnapshot, getCurrentSnapshot } =
+        await renderHookToSnapshotStream(
+          () =>
+            useQuery(query, {
+              fetchPolicy: "no-cache",
+              variables: { limit: 2 },
+            }),
+          {
+            wrapper: ({ children }) => (
+              <ApolloProvider client={client}>{children}</ApolloProvider>
+            ),
+          }
+        );
 
       // loading
       await takeSnapshot();
@@ -4101,12 +4116,10 @@ describe("useQuery Hook", () => {
 
       const { fetchMore } = getCurrentSnapshot();
 
-      await act(() =>
-        fetchMore({
-          variables: { offset: 2 },
-          updateQuery: (_, { fetchMoreResult }) => fetchMoreResult,
-        })
-      );
+      await fetchMore({
+        variables: { offset: 2 },
+        updateQuery: (_, { fetchMoreResult }) => fetchMoreResult,
+      });
 
       expect(fetches).toStrictEqual([
         { variables: { limit: 2 } },
@@ -4119,19 +4132,21 @@ describe("useQuery Hook", () => {
 
       const client = new ApolloClient({ cache: new InMemoryCache(), link });
 
-      const { takeSnapshot, getCurrentSnapshot } = renderHookToSnapshotStream(
-        () =>
-          useQuery(query, {
-            notifyOnNetworkStatusChange: true,
-            fetchPolicy: "no-cache",
-            variables: { limit: 2 },
-          }),
-        {
-          wrapper: ({ children }) => (
-            <ApolloProvider client={client}>{children}</ApolloProvider>
-          ),
-        }
-      );
+      using _disabledAct = disableActEnvironment();
+      const { takeSnapshot, getCurrentSnapshot } =
+        await renderHookToSnapshotStream(
+          () =>
+            useQuery(query, {
+              notifyOnNetworkStatusChange: true,
+              fetchPolicy: "no-cache",
+              variables: { limit: 2 },
+            }),
+          {
+            wrapper: ({ children }) => (
+              <ApolloProvider client={client}>{children}</ApolloProvider>
+            ),
+          }
+        );
 
       {
         const { loading, networkStatus, data } = await takeSnapshot();
@@ -4154,16 +4169,13 @@ describe("useQuery Hook", () => {
         });
       }
 
-      let fetchMorePromise!: Promise<ApolloQueryResult<PaginatedCaseData>>;
       const { fetchMore } = getCurrentSnapshot();
 
-      act(() => {
-        fetchMorePromise = fetchMore({
-          variables: { offset: 2 },
-          updateQuery: (prev, { fetchMoreResult }) => ({
-            letters: prev.letters.concat(fetchMoreResult.letters),
-          }),
-        });
+      let fetchMorePromise = fetchMore({
+        variables: { offset: 2 },
+        updateQuery: (prev, { fetchMoreResult }) => ({
+          letters: prev.letters.concat(fetchMoreResult.letters),
+        }),
       });
 
       {
@@ -4218,11 +4230,9 @@ describe("useQuery Hook", () => {
 
       await expect(takeSnapshot).not.toRerender();
 
-      act(() => {
-        fetchMorePromise = fetchMore({
-          variables: { offset: 4 },
-          updateQuery: (_, { fetchMoreResult }) => fetchMoreResult,
-        });
+      fetchMorePromise = fetchMore({
+        variables: { offset: 4 },
+        updateQuery: (_, { fetchMoreResult }) => fetchMoreResult,
       });
 
       {
@@ -4280,15 +4290,20 @@ describe("useQuery Hook", () => {
 
       const client = new ApolloClient({ cache: new InMemoryCache(), link });
 
-      const { takeSnapshot, getCurrentSnapshot } = renderHookToSnapshotStream(
-        () =>
-          useQuery(query, { fetchPolicy: "no-cache", variables: { limit: 2 } }),
-        {
-          wrapper: ({ children }) => (
-            <ApolloProvider client={client}>{children}</ApolloProvider>
-          ),
-        }
-      );
+      using _disabledAct = disableActEnvironment();
+      const { takeSnapshot, getCurrentSnapshot } =
+        await renderHookToSnapshotStream(
+          () =>
+            useQuery(query, {
+              fetchPolicy: "no-cache",
+              variables: { limit: 2 },
+            }),
+          {
+            wrapper: ({ children }) => (
+              <ApolloProvider client={client}>{children}</ApolloProvider>
+            ),
+          }
+        );
 
       // loading
       await takeSnapshot();
@@ -4321,15 +4336,20 @@ describe("useQuery Hook", () => {
 
       const client = new ApolloClient({ cache: new InMemoryCache(), link });
 
-      const { takeSnapshot, getCurrentSnapshot } = renderHookToSnapshotStream(
-        () =>
-          useQuery(query, { fetchPolicy: "no-cache", variables: { limit: 2 } }),
-        {
-          wrapper: ({ children }) => (
-            <ApolloProvider client={client}>{children}</ApolloProvider>
-          ),
-        }
-      );
+      using _disabledAct = disableActEnvironment();
+      const { takeSnapshot, getCurrentSnapshot } =
+        await renderHookToSnapshotStream(
+          () =>
+            useQuery(query, {
+              fetchPolicy: "no-cache",
+              variables: { limit: 2 },
+            }),
+          {
+            wrapper: ({ children }) => (
+              <ApolloProvider client={client}>{children}</ApolloProvider>
+            ),
+          }
+        );
 
       // initial loading
       await takeSnapshot();
@@ -4338,12 +4358,10 @@ describe("useQuery Hook", () => {
       await takeSnapshot();
 
       const { fetchMore } = getCurrentSnapshot();
-      await act(() =>
-        fetchMore({
-          variables: { offset: 2 },
-          updateQuery: (_, { fetchMoreResult }) => fetchMoreResult,
-        })
-      );
+      await fetchMore({
+        variables: { offset: 2 },
+        updateQuery: (_, { fetchMoreResult }) => fetchMoreResult,
+      });
 
       expect(client.extract()).toStrictEqual({});
     });
@@ -4487,6 +4505,7 @@ describe("useQuery Hook", () => {
       }
     `;
 
+    using _disabledAct = disableActEnvironment();
     const renderStream = createRenderStream({
       initialSnapshot: {
         useQueryResult: null as QueryResult<Query1, Variables> | null,
@@ -4537,7 +4556,7 @@ describe("useQuery Hook", () => {
               // Intentionally use reobserve here as opposed to refetch to
               // ensure we check against reported cache results with cache-first
               // and notifyOnNetworkStatusChange
-              useQueryResult.observable.reobserve();
+              void useQueryResult.observable.reobserve();
             }}
           >
             Reload 1st query
@@ -4546,7 +4565,7 @@ describe("useQuery Hook", () => {
       );
     }
 
-    renderStream.render(<App />, {
+    await renderStream.render(<App />, {
       wrapper: ({ children }) => (
         <ApolloProvider client={client}>{children}</ApolloProvider>
       ),
@@ -4589,7 +4608,7 @@ describe("useQuery Hook", () => {
       });
     }
 
-    await act(() => user.click(screen.getByText("Run 2nd query")));
+    await user.click(screen.getByText("Run 2nd query"));
 
     {
       const { snapshot } = await renderStream.takeRender();
@@ -4646,7 +4665,7 @@ describe("useQuery Hook", () => {
       });
     }
 
-    await act(() => user.click(screen.getByText("Reload 1st query")));
+    await user.click(screen.getByText("Reload 1st query"));
 
     {
       const { snapshot } = await renderStream.takeRender();
@@ -4746,6 +4765,7 @@ describe("useQuery Hook", () => {
       }
     `;
 
+    using _disabledAct = disableActEnvironment();
     const renderStream = createRenderStream({
       initialSnapshot: {
         useQueryResult: null as QueryResult<Query1, Variables> | null,
@@ -4797,7 +4817,7 @@ describe("useQuery Hook", () => {
       return <button onClick={() => execute()}>Run 2nd query</button>;
     }
 
-    renderStream.render(<App />, {
+    await renderStream.render(<App />, {
       wrapper: ({ children }) => (
         <ApolloProvider client={client}>{children}</ApolloProvider>
       ),
@@ -4840,7 +4860,7 @@ describe("useQuery Hook", () => {
       });
     }
 
-    await act(() => user.click(screen.getByText("Run 2nd query")));
+    await user.click(screen.getByText("Run 2nd query"));
 
     {
       const { snapshot } = await renderStream.takeRender();
@@ -4968,6 +4988,7 @@ describe("useQuery Hook", () => {
       }
     `;
 
+    using _disabledAct = disableActEnvironment();
     const renderStream = createRenderStream({
       initialSnapshot: {
         useQueryResult: null as QueryResult<Query1, Variables> | null,
@@ -5019,7 +5040,7 @@ describe("useQuery Hook", () => {
       return <button onClick={() => execute()}>Run 2nd query</button>;
     }
 
-    renderStream.render(<App />, {
+    await renderStream.render(<App />, {
       wrapper: ({ children }) => (
         <ApolloProvider client={client}>{children}</ApolloProvider>
       ),
@@ -5062,7 +5083,7 @@ describe("useQuery Hook", () => {
       });
     }
 
-    await act(() => user.click(screen.getByText("Run 2nd query")));
+    await user.click(screen.getByText("Run 2nd query"));
 
     {
       const { snapshot } = await renderStream.takeRender();
@@ -5127,6 +5148,7 @@ describe("useQuery Hook", () => {
       }
     `;
 
+    using _disabledAct = disableActEnvironment();
     const renderStream = createRenderStream({
       initialSnapshot: {
         useQueryResult: null as QueryResult | null,
@@ -5177,7 +5199,7 @@ describe("useQuery Hook", () => {
       return null;
     }
 
-    renderStream.render(<App />, {
+    await renderStream.render(<App />, {
       wrapper: ({ children }) => (
         <ApolloProvider client={client}>{children}</ApolloProvider>
       ),
@@ -5246,6 +5268,7 @@ describe("useQuery Hook", () => {
 
     const user = userEvent.setup();
 
+    using _disabledAct = disableActEnvironment();
     const renderStream = createRenderStream({
       initialSnapshot: {
         useQueryResult: null as QueryResult | null,
@@ -5336,7 +5359,7 @@ describe("useQuery Hook", () => {
       return <button onClick={() => mutate()}>Run mutation</button>;
     }
 
-    renderStream.render(<App />, {
+    await renderStream.render(<App />, {
       wrapper: ({ children }) => (
         <ApolloProvider client={client}>{children}</ApolloProvider>
       ),
@@ -5372,7 +5395,7 @@ describe("useQuery Hook", () => {
       });
     }
 
-    await act(() => user.click(screen.getByText("Run mutation")));
+    await user.click(screen.getByText("Run mutation"));
     await renderStream.takeRender();
 
     {
@@ -5449,14 +5472,16 @@ describe("useQuery Hook", () => {
         </MockedProvider>
       );
 
-      const { takeSnapshot, getCurrentSnapshot } = renderHookToSnapshotStream(
-        () =>
-          useQuery(query, {
-            variables: { id: 1 },
-            notifyOnNetworkStatusChange: true,
-          }),
-        { wrapper }
-      );
+      using _disabledAct = disableActEnvironment();
+      const { takeSnapshot, getCurrentSnapshot } =
+        await renderHookToSnapshotStream(
+          () =>
+            useQuery(query, {
+              variables: { id: 1 },
+              notifyOnNetworkStatusChange: true,
+            }),
+          { wrapper }
+        );
       {
         const result = await takeSnapshot();
         expect(result.loading).toBe(true);
@@ -5467,7 +5492,7 @@ describe("useQuery Hook", () => {
         expect(result.loading).toBe(false);
         expect(result.data).toEqual({ hello: "world 1" });
       }
-      getCurrentSnapshot().refetch({ id: 2 });
+      await getCurrentSnapshot().refetch({ id: 2 });
       {
         const result = await takeSnapshot();
         expect(result.loading).toBe(true);
@@ -5505,19 +5530,21 @@ describe("useQuery Hook", () => {
 
       const cache = new InMemoryCache();
 
-      const { takeSnapshot, getCurrentSnapshot } = renderHookToSnapshotStream(
-        () =>
-          useQuery(query, {
-            notifyOnNetworkStatusChange: true,
-          }),
-        {
-          wrapper: ({ children }) => (
-            <MockedProvider mocks={mocks} cache={cache}>
-              {children}
-            </MockedProvider>
-          ),
-        }
-      );
+      using _disabledAct = disableActEnvironment();
+      const { takeSnapshot, getCurrentSnapshot } =
+        await renderHookToSnapshotStream(
+          () =>
+            useQuery(query, {
+              notifyOnNetworkStatusChange: true,
+            }),
+          {
+            wrapper: ({ children }) => (
+              <MockedProvider mocks={mocks} cache={cache}>
+                {children}
+              </MockedProvider>
+            ),
+          }
+        );
 
       {
         const result = await takeSnapshot();
@@ -5531,7 +5558,9 @@ describe("useQuery Hook", () => {
         expect(result.data).toEqual({ hello: "world 1" });
       }
 
-      getCurrentSnapshot().refetch();
+      await getCurrentSnapshot()
+        .refetch()
+        .catch(() => {});
       {
         const result = await takeSnapshot();
         expect(result.loading).toBe(true);
@@ -5546,7 +5575,7 @@ describe("useQuery Hook", () => {
         expect(result.data).toEqual({ hello: "world 1" });
       }
 
-      getCurrentSnapshot().refetch();
+      await getCurrentSnapshot().refetch();
       {
         const result = await takeSnapshot();
         expect(result.loading).toBe(true);
@@ -5645,7 +5674,10 @@ describe("useQuery Hook", () => {
         expect(mergeParams).toEqual([[void 0, [2, 3, 5, 7, 11]]]);
 
         const thenFn = jest.fn();
-        result.current.refetch({ min: 12, max: 30 }).then(thenFn);
+        await act(
+          async () =>
+            void result.current.refetch({ min: 12, max: 30 }).then(thenFn)
+        );
 
         await waitFor(
           () => {
@@ -5738,7 +5770,10 @@ describe("useQuery Hook", () => {
         expect(mergeParams).toEqual([[undefined, [2, 3, 5, 7, 11]]]);
 
         const thenFn = jest.fn();
-        result.current.refetch({ min: 12, max: 30 }).then(thenFn);
+        await act(
+          async () =>
+            void result.current.refetch({ min: 12, max: 30 }).then(thenFn)
+        );
 
         await waitFor(
           () => {
@@ -5814,15 +5849,17 @@ describe("useQuery Hook", () => {
             {children}
           </MockedProvider>
         );
-        const { takeSnapshot, getCurrentSnapshot } = renderHookToSnapshotStream(
-          () =>
-            useQuery(query, {
-              variables: { min: 0, max: 12 },
-              notifyOnNetworkStatusChange: true,
-              // Intentionally not passing refetchWritePolicy.
-            }),
-          { wrapper }
-        );
+        using _disabledAct = disableActEnvironment();
+        const { takeSnapshot, getCurrentSnapshot } =
+          await renderHookToSnapshotStream(
+            () =>
+              useQuery(query, {
+                variables: { min: 0, max: 12 },
+                notifyOnNetworkStatusChange: true,
+                // Intentionally not passing refetchWritePolicy.
+              }),
+            { wrapper }
+          );
 
         {
           const result = await takeSnapshot();
@@ -5840,7 +5877,7 @@ describe("useQuery Hook", () => {
         }
 
         const thenFn = jest.fn();
-        getCurrentSnapshot().refetch({ min: 12, max: 30 }).then(thenFn);
+        await getCurrentSnapshot().refetch({ min: 12, max: 30 }).then(thenFn);
 
         {
           const result = await takeSnapshot();
@@ -5951,7 +5988,7 @@ describe("useQuery Hook", () => {
             result.networkStatus === NetworkStatus.ready &&
             !hasRefetchedRef.current
           ) {
-            client.reFetchObservableQueries();
+            void client.reFetchObservableQueries();
             hasRefetchedRef.current = true;
           }
         }, [result.networkStatus]);
@@ -6314,12 +6351,13 @@ describe("useQuery Hook", () => {
 
       const cache = new InMemoryCache();
       const onCompleted = jest.fn();
-      const { takeSnapshot } = renderHookToSnapshotStream(
+      using _disabledAct = disableActEnvironment();
+      const { takeSnapshot } = await renderHookToSnapshotStream(
         () =>
           useQuery(query, {
             onCompleted,
             notifyOnNetworkStatusChange: true,
-            pollInterval: 110,
+            pollInterval: 200,
           }),
         {
           wrapper: ({ children }) => (
@@ -6435,7 +6473,7 @@ describe("useQuery Hook", () => {
       const ChildComponent: React.FC = () => {
         const { data, client } = useQuery(query, { onCompleted });
         function refetchQueries() {
-          client.refetchQueries({ include: "active" });
+          void client.refetchQueries({ include: "active" });
         }
         function writeQuery() {
           client.writeQuery({ query, data: { hello: "baz" } });
@@ -6501,7 +6539,7 @@ describe("useQuery Hook", () => {
           notifyOnNetworkStatusChange: true,
         });
         function refetchQueries() {
-          client.refetchQueries({ include: "active" });
+          void client.refetchQueries({ include: "active" });
         }
         function writeQuery() {
           client.writeQuery({ query, data: { hello: "baz" } });
@@ -6547,6 +6585,10 @@ describe("useQuery Hook", () => {
 
   describe("Optimistic data", () => {
     it("should display rolled back optimistic data when an error occurs", async () => {
+      if (IS_REACT_17) {
+        // this test is currently broken in React 17 with RTL 16 and needs further investigation
+        return;
+      }
       const query = gql`
         query AllCars {
           cars {
@@ -6609,45 +6651,47 @@ describe("useQuery Hook", () => {
       );
 
       const onError = jest.fn();
-      const { takeSnapshot, getCurrentSnapshot } = renderHookToSnapshotStream(
-        () => ({
-          mutation: useMutation(mutation, {
-            optimisticResponse: { addCar: carData },
-            update(cache, { data }) {
-              cache.modify({
-                fields: {
-                  cars(existing, { readField }) {
-                    const newCarRef = cache.writeFragment({
-                      data: data!.addCar,
-                      fragment: gql`
-                        fragment NewCar on Car {
-                          id
-                          make
-                          model
-                        }
-                      `,
-                    });
+      using _disabledAct = disableActEnvironment();
+      const { takeSnapshot, getCurrentSnapshot } =
+        await renderHookToSnapshotStream(
+          () => ({
+            mutation: useMutation(mutation, {
+              optimisticResponse: { addCar: carData },
+              update(cache, { data }) {
+                cache.modify({
+                  fields: {
+                    cars(existing, { readField }) {
+                      const newCarRef = cache.writeFragment({
+                        data: data!.addCar,
+                        fragment: gql`
+                          fragment NewCar on Car {
+                            id
+                            make
+                            model
+                          }
+                        `,
+                      });
 
-                    if (
-                      existing.some(
-                        (ref: Reference) =>
-                          readField("id", ref) === data!.addCar.id
-                      )
-                    ) {
-                      return existing;
-                    }
+                      if (
+                        existing.some(
+                          (ref: Reference) =>
+                            readField("id", ref) === data!.addCar.id
+                        )
+                      ) {
+                        return existing;
+                      }
 
-                    return [...existing, newCarRef];
+                      return [...existing, newCarRef];
+                    },
                   },
-                },
-              });
-            },
-            onError,
+                });
+              },
+              onError,
+            }),
+            query: useQuery(query),
           }),
-          query: useQuery(query),
-        }),
-        { wrapper }
-      );
+          { wrapper }
+        );
 
       {
         const { query } = await takeSnapshot();
@@ -6661,7 +6705,7 @@ describe("useQuery Hook", () => {
         expect(query.data).toEqual(carsData);
       }
 
-      act(() => void mutate());
+      void mutate();
 
       {
         // The mutation ran and is loading the result. The query stays at not
@@ -6842,7 +6886,6 @@ describe("useQuery Hook", () => {
     });
 
     it("should attempt a refetch when data is missing, partialRefetch is true and addTypename is false for the cache", async () => {
-      using _disabledActWarnings = disableActWarnings();
       using consoleSpy = spyOnConsole("error");
       const query = gql`
         {
@@ -6873,7 +6916,8 @@ describe("useQuery Hook", () => {
         <ApolloProvider client={client}>{children}</ApolloProvider>
       );
 
-      const { takeSnapshot } = renderHookToSnapshotStream(
+      using _disabledAct = disableActEnvironment();
+      const { takeSnapshot } = await renderHookToSnapshotStream(
         () =>
           useQuery(query, {
             partialRefetch: true,
@@ -6899,10 +6943,7 @@ describe("useQuery Hook", () => {
       }
 
       const calls = consoleSpy.error.mock.calls;
-      if (!IS_REACT_17) {
-        // React 17 doesn't know `IS_REACT_ACT_ENVIRONMENT` yet, so it will log a warning that we don't care about.
-        expect(calls.length).toBe(1);
-      }
+      expect(calls.length).toBe(1);
       expect(calls[0][0]).toMatch("Missing field");
 
       {
@@ -6972,7 +7013,7 @@ describe("useQuery Hook", () => {
       const entityId = 1;
       const shortTitle = "Short";
       const longerTitle = "A little longer";
-      client.mutate({
+      await client.mutate({
         mutation,
         variables: {
           id: entityId,
@@ -7007,15 +7048,16 @@ describe("useQuery Hook", () => {
         },
       });
 
-      setTimeout(() => {
-        client.mutate({
-          mutation,
-          variables: {
-            id: entityId,
-            title: longerTitle,
-          },
-        });
-      });
+      await act(
+        async () =>
+          void client.mutate({
+            mutation,
+            variables: {
+              id: entityId,
+              title: longerTitle,
+            },
+          })
+      );
 
       await waitFor(
         () => {
@@ -7244,7 +7286,7 @@ describe("useQuery Hook", () => {
       );
       expect(requestSpy).toHaveBeenCalledTimes(1);
       requestSpy.mockRestore();
-      expect(promise).resolves.toEqual({
+      await expect(promise).resolves.toEqual({
         data: { hello: "world" },
         loading: false,
         networkStatus: 7,
@@ -7839,7 +7881,8 @@ describe("useQuery Hook", () => {
         </MockedProvider>
       );
 
-      const { takeSnapshot } = renderHookToSnapshotStream(
+      using _disabledAct = disableActEnvironment();
+      const { takeSnapshot } = await renderHookToSnapshotStream(
         () => useQuery(query, { notifyOnNetworkStatusChange: true }),
         { wrapper }
       );
@@ -7857,7 +7900,7 @@ describe("useQuery Hook", () => {
         expect(result.data).toEqual(data1);
         expect(result.previousData).toBe(undefined);
 
-        result.refetch();
+        await result.refetch();
       }
 
       {
@@ -7966,7 +8009,9 @@ describe("useQuery Hook", () => {
       expect(result.current.data).toEqual(data1);
       expect(result.current.previousData).toEqual(data1);
 
-      result.current.refetch({ vin: "ABCDEFG0123456789" });
+      await act(
+        async () => void result.current.refetch({ vin: "ABCDEFG0123456789" })
+      );
       expect(result.current.loading).toBe(true);
       expect(result.current.data).toEqual(data1);
       expect(result.current.previousData).toEqual(data1);
@@ -8167,7 +8212,8 @@ describe("useQuery Hook", () => {
 
       await waitFor(
         () => {
-          result.current.useQueryResult.reobserve().then((result) => {
+          // TODO investigate why do we call `reobserve` in a very quick loop here?
+          void result.current.useQueryResult.reobserve().then((result) => {
             expect(result.loading).toBe(false);
             expect(result.data).toEqual({ a: "aaa", b: 2 });
           });
@@ -8260,7 +8306,7 @@ describe("useQuery Hook", () => {
       const link = new ApolloLink((operation) => {
         return new Observable((observer) => {
           const { gender } = operation.variables;
-          new Promise((resolve) => setTimeout(resolve, 300)).then(() => {
+          void wait(300).then(() => {
             observer.next({
               data: {
                 people:
@@ -8299,7 +8345,8 @@ describe("useQuery Hook", () => {
         </MockedProvider>
       );
 
-      const { takeSnapshot, rerender } = renderHookToSnapshotStream(
+      using _disabledAct = disableActEnvironment();
+      const { takeSnapshot, rerender } = await renderHookToSnapshotStream(
         ({ gender }: { gender: string }) =>
           useQuery(query, {
             variables: { gender },
@@ -8323,7 +8370,7 @@ describe("useQuery Hook", () => {
         });
       }
 
-      rerender({ gender: "female" });
+      await rerender({ gender: "female" });
 
       {
         const result = await takeSnapshot();
@@ -8343,7 +8390,7 @@ describe("useQuery Hook", () => {
         });
       }
 
-      rerender({ gender: "nonbinary" });
+      await rerender({ gender: "nonbinary" });
 
       {
         const result = await takeSnapshot();
@@ -10091,12 +10138,17 @@ describe("useQuery Hook", () => {
       link,
       cache: new InMemoryCache(),
     });
-    const { takeSnapshot } = renderHookToSnapshotStream(() => useQuery(query), {
-      wrapper: ({ children }) => (
-        <ApolloProvider client={client}>{children}</ApolloProvider>
-      ),
-    });
+    using _disabledAct = disableActEnvironment();
+    const { takeSnapshot } = await renderHookToSnapshotStream(
+      () => useQuery(query),
+      {
+        wrapper: ({ children }) => (
+          <ApolloProvider client={client}>{children}</ApolloProvider>
+        ),
+      }
+    );
 
+    await wait(10);
     expect(requests).toBe(1);
     {
       const result = await takeSnapshot();
@@ -10104,7 +10156,7 @@ describe("useQuery Hook", () => {
       expect(result.data).toBeUndefined();
     }
 
-    client.clearStore();
+    await client.clearStore();
 
     {
       const result = await takeSnapshot();
@@ -10149,14 +10201,16 @@ describe("useQuery Hook", () => {
       },
     ];
 
-    const { takeSnapshot, getCurrentSnapshot } = renderHookToSnapshotStream(
-      () => useQuery(query, { notifyOnNetworkStatusChange: true }),
-      {
-        wrapper: ({ children }) => (
-          <MockedProvider mocks={mocks}>{children}</MockedProvider>
-        ),
-      }
-    );
+    using _disabledAct = disableActEnvironment();
+    const { takeSnapshot, getCurrentSnapshot } =
+      await renderHookToSnapshotStream(
+        () => useQuery(query, { notifyOnNetworkStatusChange: true }),
+        {
+          wrapper: ({ children }) => (
+            <MockedProvider mocks={mocks}>{children}</MockedProvider>
+          ),
+        }
+      );
 
     {
       const { loading, data, error } = await takeSnapshot();
@@ -10198,6 +10252,915 @@ describe("useQuery Hook", () => {
     }
 
     await expect(takeSnapshot).not.toRerender({ timeout: 200 });
+  });
+
+  describe("data masking", () => {
+    it("masks queries when dataMasking is `true`", async () => {
+      type UserFieldsFragment = {
+        age: number;
+      } & { " $fragmentName"?: "UserFieldsFragment" };
+
+      interface Query {
+        currentUser: {
+          __typename: "User";
+          id: number;
+          name: string;
+        } & { " $fragmentRefs"?: { UserFieldsFragment: UserFieldsFragment } };
+      }
+
+      const query: MaskedDocumentNode<Query, never> = gql`
+        query MaskedQuery {
+          currentUser {
+            id
+            name
+            ...UserFields
+          }
+        }
+
+        fragment UserFields on User {
+          age
+        }
+      `;
+
+      const mocks = [
+        {
+          request: { query },
+          result: {
+            data: {
+              currentUser: {
+                __typename: "User",
+                id: 1,
+                name: "Test User",
+                age: 30,
+              },
+            },
+          },
+        },
+      ];
+
+      const client = new ApolloClient({
+        dataMasking: true,
+        cache: new InMemoryCache(),
+        link: new MockLink(mocks),
+      });
+
+      const renderStream = createRenderStream({
+        initialSnapshot: {
+          result: null as QueryResult<Masked<Query>, never> | null,
+        },
+      });
+
+      function App() {
+        const result = useQuery(query);
+
+        renderStream.replaceSnapshot({ result });
+
+        return null;
+      }
+
+      using _disabledAct = disableActEnvironment();
+      await renderStream.render(<App />, {
+        wrapper: ({ children }) => (
+          <ApolloProvider client={client}>{children}</ApolloProvider>
+        ),
+      });
+
+      {
+        const { snapshot } = await renderStream.takeRender();
+
+        expect(snapshot.result?.loading).toBe(true);
+      }
+
+      {
+        const { snapshot } = await renderStream.takeRender();
+        const { result } = snapshot;
+
+        expect(result?.loading).toBe(false);
+        expect(result?.data).toEqual({
+          currentUser: {
+            __typename: "User",
+            id: 1,
+            name: "Test User",
+          },
+        });
+        expect(result?.previousData).toBeUndefined();
+      }
+    });
+
+    it("does not mask query when dataMasking is `false`", async () => {
+      type UserFieldsFragment = {
+        age: number;
+      } & { " $fragmentName"?: "UserFieldsFragment" };
+
+      interface Query {
+        currentUser: {
+          __typename: "User";
+          id: number;
+          name: string;
+        } & { " $fragmentRefs"?: { UserFieldsFragment: UserFieldsFragment } };
+      }
+
+      const query: TypedDocumentNode<Query, never> = gql`
+        query MaskedQuery {
+          currentUser {
+            id
+            name
+            ...UserFields
+          }
+        }
+
+        fragment UserFields on User {
+          age
+        }
+      `;
+
+      const mocks = [
+        {
+          request: { query },
+          result: {
+            data: {
+              currentUser: {
+                __typename: "User",
+                id: 1,
+                name: "Test User",
+                age: 30,
+              },
+            },
+          },
+        },
+      ];
+
+      const client = new ApolloClient({
+        dataMasking: false,
+        cache: new InMemoryCache(),
+        link: new MockLink(mocks),
+      });
+
+      const renderStream = createRenderStream({
+        initialSnapshot: {
+          result: null as QueryResult<Query, never> | null,
+        },
+      });
+
+      function App() {
+        const result = useQuery(query);
+
+        renderStream.replaceSnapshot({ result });
+
+        return null;
+      }
+
+      using _disabledAct = disableActEnvironment();
+      await renderStream.render(<App />, {
+        wrapper: ({ children }) => (
+          <ApolloProvider client={client}>{children}</ApolloProvider>
+        ),
+      });
+
+      // loading
+      await renderStream.takeRender();
+
+      const { snapshot } = await renderStream.takeRender();
+
+      expect(snapshot.result?.data).toEqual({
+        currentUser: {
+          __typename: "User",
+          id: 1,
+          name: "Test User",
+          age: 30,
+        },
+      });
+      expect(snapshot.result?.previousData).toBeUndefined();
+    });
+
+    it("does not mask query by default", async () => {
+      type UserFieldsFragment = {
+        age: number;
+      } & { " $fragmentName"?: "UserFieldsFragment" };
+
+      interface Query {
+        currentUser: {
+          __typename: "User";
+          id: number;
+          name: string;
+        } & { " $fragmentRefs"?: { UserFieldsFragment: UserFieldsFragment } };
+      }
+
+      const query: TypedDocumentNode<Query, never> = gql`
+        query MaskedQuery {
+          currentUser {
+            id
+            name
+            ...UserFields
+          }
+        }
+
+        fragment UserFields on User {
+          age
+        }
+      `;
+
+      const mocks = [
+        {
+          request: { query },
+          result: {
+            data: {
+              currentUser: {
+                __typename: "User",
+                id: 1,
+                name: "Test User",
+                age: 30,
+              },
+            },
+          },
+        },
+      ];
+
+      const client = new ApolloClient({
+        cache: new InMemoryCache(),
+        link: new MockLink(mocks),
+      });
+
+      const renderStream = createRenderStream({
+        initialSnapshot: {
+          result: null as QueryResult<Query, never> | null,
+        },
+      });
+
+      function App() {
+        const result = useQuery(query);
+
+        renderStream.replaceSnapshot({ result });
+
+        return null;
+      }
+
+      using _disabledAct = disableActEnvironment();
+      await renderStream.render(<App />, {
+        wrapper: ({ children }) => (
+          <ApolloProvider client={client}>{children}</ApolloProvider>
+        ),
+      });
+
+      // loading
+      await renderStream.takeRender();
+
+      const { snapshot } = await renderStream.takeRender();
+
+      expect(snapshot.result?.data).toEqual({
+        currentUser: {
+          __typename: "User",
+          id: 1,
+          name: "Test User",
+          age: 30,
+        },
+      });
+      expect(snapshot.result?.previousData).toBeUndefined();
+    });
+
+    it("masks queries updated by the cache", async () => {
+      type UserFieldsFragment = {
+        age: number;
+      } & { " $fragmentName"?: "UserFieldsFragment" };
+
+      interface Query {
+        currentUser: {
+          __typename: "User";
+          id: number;
+          name: string;
+        } & { " $fragmentRefs"?: { UserFieldsFragment: UserFieldsFragment } };
+      }
+
+      const query: MaskedDocumentNode<Query, never> = gql`
+        query MaskedQuery {
+          currentUser {
+            id
+            name
+            ...UserFields
+          }
+        }
+
+        fragment UserFields on User {
+          age
+        }
+      `;
+
+      const mocks = [
+        {
+          request: { query },
+          result: {
+            data: {
+              currentUser: {
+                __typename: "User",
+                id: 1,
+                name: "Test User",
+                age: 30,
+              },
+            },
+          },
+        },
+      ];
+
+      const client = new ApolloClient({
+        dataMasking: true,
+        cache: new InMemoryCache(),
+        link: new MockLink(mocks),
+      });
+
+      const renderStream = createRenderStream({
+        initialSnapshot: {
+          result: null as QueryResult<Masked<Query>, never> | null,
+        },
+      });
+
+      function App() {
+        const result = useQuery(query);
+
+        renderStream.replaceSnapshot({ result });
+
+        return null;
+      }
+
+      using _disabledAct = disableActEnvironment();
+      await renderStream.render(<App />, {
+        wrapper: ({ children }) => (
+          <ApolloProvider client={client}>{children}</ApolloProvider>
+        ),
+      });
+
+      // loading
+      await renderStream.takeRender();
+
+      {
+        const { snapshot } = await renderStream.takeRender();
+
+        expect(snapshot.result?.data).toEqual({
+          currentUser: {
+            __typename: "User",
+            id: 1,
+            name: "Test User",
+          },
+        });
+        expect(snapshot.result?.previousData).toBeUndefined();
+      }
+
+      client.writeQuery({
+        query,
+        data: {
+          currentUser: {
+            __typename: "User",
+            id: 1,
+            name: "Test User (updated)",
+            age: 35,
+          },
+        },
+      });
+
+      {
+        const { snapshot } = await renderStream.takeRender();
+
+        expect(snapshot.result?.data).toEqual({
+          currentUser: {
+            __typename: "User",
+            id: 1,
+            name: "Test User (updated)",
+          },
+        });
+        expect(snapshot.result?.previousData).toEqual({
+          currentUser: { __typename: "User", id: 1, name: "Test User" },
+        });
+      }
+    });
+
+    it("does not rerender when updating field in named fragment", async () => {
+      type UserFieldsFragment = {
+        age: number;
+      } & { " $fragmentName"?: "UserFieldsFragment" };
+
+      interface Query {
+        currentUser: {
+          __typename: "User";
+          id: number;
+          name: string;
+        } & { " $fragmentRefs"?: { UserFieldsFragment: UserFieldsFragment } };
+      }
+
+      const query: MaskedDocumentNode<Query, never> = gql`
+        query MaskedQuery {
+          currentUser {
+            id
+            name
+            ...UserFields
+          }
+        }
+
+        fragment UserFields on User {
+          age
+        }
+      `;
+
+      const mocks = [
+        {
+          request: { query },
+          result: {
+            data: {
+              currentUser: {
+                __typename: "User",
+                id: 1,
+                name: "Test User",
+                age: 30,
+              },
+            },
+          },
+        },
+      ];
+
+      const client = new ApolloClient({
+        dataMasking: true,
+        cache: new InMemoryCache(),
+        link: new MockLink(mocks),
+      });
+
+      const renderStream = createRenderStream({
+        initialSnapshot: {
+          result: null as QueryResult<Masked<Query>, never> | null,
+        },
+      });
+
+      function App() {
+        const result = useQuery(query);
+
+        renderStream.replaceSnapshot({ result });
+
+        return null;
+      }
+
+      using _disabledAct = disableActEnvironment();
+      await renderStream.render(<App />, {
+        wrapper: ({ children }) => (
+          <ApolloProvider client={client}>{children}</ApolloProvider>
+        ),
+      });
+
+      // loading
+      await renderStream.takeRender();
+
+      {
+        const { snapshot } = await renderStream.takeRender();
+
+        expect(snapshot.result?.data).toEqual({
+          currentUser: {
+            __typename: "User",
+            id: 1,
+            name: "Test User",
+          },
+        });
+        expect(snapshot.result?.previousData).toBeUndefined();
+      }
+
+      client.writeQuery({
+        query,
+        data: {
+          currentUser: {
+            __typename: "User",
+            id: 1,
+            name: "Test User",
+            age: 35,
+          },
+        },
+      });
+
+      await expect(renderStream).not.toRerender();
+
+      expect(client.readQuery({ query })).toEqual({
+        currentUser: {
+          __typename: "User",
+          id: 1,
+          name: "Test User",
+          age: 35,
+        },
+      });
+    });
+
+    it.each(["cache-first", "cache-only"] as FetchPolicy[])(
+      "masks result from cache when using with %s fetch policy",
+      async (fetchPolicy) => {
+        type UserFieldsFragment = {
+          age: number;
+        } & { " $fragmentName"?: "UserFieldsFragment" };
+
+        interface Query {
+          currentUser: {
+            __typename: "User";
+            id: number;
+            name: string;
+          } & { " $fragmentRefs"?: { UserFieldsFragment: UserFieldsFragment } };
+        }
+
+        const query: MaskedDocumentNode<Query, never> = gql`
+          query MaskedQuery {
+            currentUser {
+              id
+              name
+              ...UserFields
+            }
+          }
+
+          fragment UserFields on User {
+            age
+          }
+        `;
+
+        const mocks = [
+          {
+            request: { query },
+            result: {
+              data: {
+                currentUser: {
+                  __typename: "User",
+                  id: 1,
+                  name: "Test User",
+                  age: 30,
+                },
+              },
+            },
+          },
+        ];
+
+        const client = new ApolloClient({
+          dataMasking: true,
+          cache: new InMemoryCache(),
+          link: new MockLink(mocks),
+        });
+
+        client.writeQuery({
+          query,
+          data: {
+            currentUser: {
+              __typename: "User",
+              id: 1,
+              name: "Test User",
+              age: 30,
+            },
+          },
+        });
+
+        const renderStream = createRenderStream({
+          initialSnapshot: {
+            result: null as QueryResult<Masked<Query>, never> | null,
+          },
+        });
+
+        function App() {
+          const result = useQuery(query, { fetchPolicy });
+
+          renderStream.replaceSnapshot({ result });
+
+          return null;
+        }
+
+        using _disabledAct = disableActEnvironment();
+        await renderStream.render(<App />, {
+          wrapper: ({ children }) => (
+            <ApolloProvider client={client}>{children}</ApolloProvider>
+          ),
+        });
+
+        const { snapshot } = await renderStream.takeRender();
+
+        expect(snapshot.result?.data).toEqual({
+          currentUser: {
+            __typename: "User",
+            id: 1,
+            name: "Test User",
+          },
+        });
+        expect(snapshot.result?.previousData).toBeUndefined();
+      }
+    );
+
+    it("masks cache and network result when using cache-and-network fetch policy", async () => {
+      type UserFieldsFragment = {
+        age: number;
+      } & { " $fragmentName"?: "UserFieldsFragment" };
+
+      interface Query {
+        currentUser: {
+          __typename: "User";
+          id: number;
+          name: string;
+        } & { " $fragmentRefs"?: { UserFieldsFragment: UserFieldsFragment } };
+      }
+
+      const query: MaskedDocumentNode<Query, never> = gql`
+        query MaskedQuery {
+          currentUser {
+            id
+            name
+            ...UserFields
+          }
+        }
+
+        fragment UserFields on User {
+          age
+        }
+      `;
+
+      const mocks = [
+        {
+          request: { query },
+          result: {
+            data: {
+              currentUser: {
+                __typename: "User",
+                id: 1,
+                name: "Test User (server)",
+                age: 35,
+              },
+            },
+          },
+          delay: 20,
+        },
+      ];
+
+      const client = new ApolloClient({
+        dataMasking: true,
+        cache: new InMemoryCache(),
+        link: new MockLink(mocks),
+      });
+
+      client.writeQuery({
+        query,
+        data: {
+          currentUser: {
+            __typename: "User",
+            id: 1,
+            name: "Test User",
+            age: 34,
+          },
+        },
+      });
+
+      const renderStream = createRenderStream({
+        initialSnapshot: {
+          result: null as QueryResult<Masked<Query>, never> | null,
+        },
+      });
+
+      function App() {
+        const result = useQuery(query, { fetchPolicy: "cache-and-network" });
+
+        renderStream.replaceSnapshot({ result });
+
+        return null;
+      }
+
+      using _disabledAct = disableActEnvironment();
+      await renderStream.render(<App />, {
+        wrapper: ({ children }) => (
+          <ApolloProvider client={client}>{children}</ApolloProvider>
+        ),
+      });
+
+      {
+        const { snapshot } = await renderStream.takeRender();
+
+        expect(snapshot.result?.data).toEqual({
+          currentUser: {
+            __typename: "User",
+            id: 1,
+            name: "Test User",
+          },
+        });
+        expect(snapshot.result?.previousData).toBeUndefined();
+      }
+
+      {
+        const { snapshot } = await renderStream.takeRender();
+
+        expect(snapshot.result?.data).toEqual({
+          currentUser: {
+            __typename: "User",
+            id: 1,
+            name: "Test User (server)",
+          },
+        });
+        expect(snapshot.result?.previousData).toEqual({
+          currentUser: {
+            __typename: "User",
+            id: 1,
+            name: "Test User",
+          },
+        });
+      }
+    });
+
+    it("masks partial cache data when returnPartialData is `true`", async () => {
+      type UserFieldsFragment = {
+        __typename: "User";
+        age: number;
+      } & { " $fragmentName"?: "UserFieldsFragment" };
+
+      interface Query {
+        currentUser: {
+          __typename: "User";
+          id: number;
+          name: string;
+        } & { " $fragmentRefs"?: { UserFieldsFragment: UserFieldsFragment } };
+      }
+
+      const query: MaskedDocumentNode<Query, never> = gql`
+        query MaskedQuery {
+          currentUser {
+            id
+            name
+            ...UserFields
+          }
+        }
+
+        fragment UserFields on User {
+          age
+        }
+      `;
+
+      const mocks = [
+        {
+          request: { query },
+          result: {
+            data: {
+              currentUser: {
+                __typename: "User",
+                id: 1,
+                name: "Test User (server)",
+                age: 35,
+              },
+            },
+          },
+          delay: 20,
+        },
+      ];
+
+      const client = new ApolloClient({
+        dataMasking: true,
+        cache: new InMemoryCache(),
+        link: new MockLink(mocks),
+      });
+
+      {
+        using _ = spyOnConsole("error");
+
+        client.writeQuery({
+          query,
+          data: {
+            // @ts-expect-error writing partial result
+            currentUser: {
+              __typename: "User",
+              id: 1,
+              age: 34,
+            },
+          },
+        });
+      }
+
+      const renderStream = createRenderStream({
+        initialSnapshot: {
+          result: null as QueryResult<Masked<Query>, never> | null,
+        },
+      });
+
+      function App() {
+        const result = useQuery(query, { returnPartialData: true });
+
+        renderStream.replaceSnapshot({ result });
+
+        return null;
+      }
+
+      using _disabledAct = disableActEnvironment();
+      await renderStream.render(<App />, {
+        wrapper: ({ children }) => (
+          <ApolloProvider client={client}>{children}</ApolloProvider>
+        ),
+      });
+
+      {
+        const { snapshot } = await renderStream.takeRender();
+
+        expect(snapshot.result?.data).toEqual({
+          currentUser: {
+            __typename: "User",
+            id: 1,
+          },
+        });
+      }
+
+      {
+        const { snapshot } = await renderStream.takeRender();
+
+        expect(snapshot.result?.data).toEqual({
+          currentUser: {
+            __typename: "User",
+            id: 1,
+            name: "Test User (server)",
+          },
+        });
+      }
+    });
+
+    it("masks partial data returned from data on errors with errorPolicy `all`", async () => {
+      type UserFieldsFragment = {
+        age: number;
+      } & { " $fragmentName"?: "UserFieldsFragment" };
+
+      interface Query {
+        currentUser: {
+          __typename: "User";
+          id: number;
+          name: string;
+        } & { " $fragmentRefs"?: { UserFieldsFragment: UserFieldsFragment } };
+      }
+
+      const query: MaskedDocumentNode<Query, never> = gql`
+        query MaskedQuery {
+          currentUser {
+            id
+            name
+            ...UserFields
+          }
+        }
+
+        fragment UserFields on User {
+          age
+        }
+      `;
+
+      const mocks = [
+        {
+          request: { query },
+          result: {
+            data: {
+              currentUser: {
+                __typename: "User",
+                id: 1,
+                name: null,
+                age: 34,
+              },
+            },
+            errors: [new GraphQLError("Couldn't get name")],
+          },
+          delay: 20,
+        },
+      ];
+
+      const client = new ApolloClient({
+        dataMasking: true,
+        cache: new InMemoryCache(),
+        link: new MockLink(mocks),
+      });
+
+      const renderStream = createRenderStream({
+        initialSnapshot: {
+          result: null as QueryResult<Masked<Query>, never> | null,
+        },
+      });
+
+      function App() {
+        const result = useQuery(query, { errorPolicy: "all" });
+
+        renderStream.replaceSnapshot({ result });
+
+        return null;
+      }
+
+      using _disabledAct = disableActEnvironment();
+      await renderStream.render(<App />, {
+        wrapper: ({ children }) => (
+          <ApolloProvider client={client}>{children}</ApolloProvider>
+        ),
+      });
+
+      // loading
+      await renderStream.takeRender();
+
+      {
+        const { snapshot } = await renderStream.takeRender();
+        const { result } = snapshot;
+
+        expect(result?.data).toEqual({
+          currentUser: {
+            __typename: "User",
+            id: 1,
+            name: null,
+          },
+        });
+
+        expect(result?.error).toEqual(
+          new ApolloError({
+            graphQLErrors: [new GraphQLError("Couldn't get name")],
+          })
+        );
+      }
+    });
   });
 });
 

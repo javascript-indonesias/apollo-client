@@ -55,11 +55,19 @@ import {
   setupSimpleCase,
   setupVariablesCase,
   spyOnConsole,
+  addDelayToMocks,
 } from "../../../testing/internal";
 import { SubscribeToMoreFunction } from "../useSuspenseQuery";
 import {
+  MaskedVariablesCaseData,
+  setupMaskedVariablesCase,
+  UnmaskedVariablesCaseData,
+} from "../../../testing/internal/scenarios";
+import { Masked, MaskedDocumentNode } from "../../../masking";
+import {
   RenderStream,
   createRenderStream,
+  disableActEnvironment,
   useTrackRenders,
 } from "@testing-library/react-render-stream";
 
@@ -147,7 +155,8 @@ it("fetches a simple query with minimal config", async () => {
     );
   }
 
-  renderStream.render(<App />, { wrapper: createMockWrapper({ mocks }) });
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, { wrapper: createMockWrapper({ mocks }) });
 
   {
     const { renderedComponents } = await renderStream.takeRender();
@@ -190,7 +199,8 @@ it("tears down the query on unmount", async () => {
     );
   }
 
-  const { unmount } = renderStream.render(<App />, {
+  using _disabledAct = disableActEnvironment();
+  const { unmount } = await renderStream.render(<App />, {
     wrapper: createClientWrapper(client),
   });
 
@@ -316,7 +326,8 @@ it("will resubscribe after disposed when mounting useReadQuery", async () => {
     );
   }
 
-  renderStream.render(<App />, { wrapper: createClientWrapper(client) });
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, { wrapper: createClientWrapper(client) });
 
   expect(client.getObservableQueries().size).toBe(1);
   expect(client).toHaveSuspenseCacheEntryUsing(query);
@@ -333,7 +344,7 @@ it("will resubscribe after disposed when mounting useReadQuery", async () => {
   expect(client.getObservableQueries().size).toBe(0);
   expect(client).not.toHaveSuspenseCacheEntryUsing(query);
 
-  await act(() => user.click(screen.getByText("Toggle")));
+  await user.click(screen.getByText("Toggle"));
 
   {
     const { snapshot, renderedComponents } = await renderStream.takeRender();
@@ -392,7 +403,8 @@ it("auto resubscribes when mounting useReadQuery after naturally disposed by use
     );
   }
 
-  renderStream.render(<App />, { wrapper: createClientWrapper(client) });
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, { wrapper: createClientWrapper(client) });
 
   const toggleButton = screen.getByText("Toggle");
 
@@ -415,7 +427,7 @@ it("auto resubscribes when mounting useReadQuery after naturally disposed by use
     });
   }
 
-  await act(() => user.click(toggleButton));
+  await user.click(toggleButton);
   await renderStream.takeRender();
   await wait(0);
 
@@ -425,7 +437,7 @@ it("auto resubscribes when mounting useReadQuery after naturally disposed by use
   // again.
   expect(client).toHaveSuspenseCacheEntryUsing(query);
 
-  await act(() => user.click(toggleButton));
+  await user.click(toggleButton);
 
   expect(client.getObservableQueries().size).toBe(1);
   expect(client).toHaveSuspenseCacheEntryUsing(query);
@@ -499,7 +511,8 @@ it("does not recreate queryRef and execute a network request when rerendering us
     );
   }
 
-  const { rerender } = renderStream.render(<App />, {
+  using _disabledAct = disableActEnvironment();
+  const { rerender } = await renderStream.render(<App />, {
     wrapper: createClientWrapper(client),
   });
 
@@ -521,16 +534,16 @@ it("does not recreate queryRef and execute a network request when rerendering us
     });
   }
 
-  await act(() => user.click(toggleButton));
+  await user.click(toggleButton);
   await renderStream.takeRender();
   await wait(0);
 
-  rerender(<App />);
+  await rerender(<App />);
   await renderStream.takeRender();
 
   expect(fetchCount).toBe(1);
 
-  await act(() => user.click(toggleButton));
+  await user.click(toggleButton);
 
   {
     const { snapshot, renderedComponents } = await renderStream.takeRender();
@@ -597,7 +610,8 @@ it("does not recreate queryRef or execute a network request when rerendering use
     );
   }
 
-  renderStream.render(<App />, {
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, {
     wrapper: createClientWrapper(client, React.StrictMode),
   });
 
@@ -613,7 +627,7 @@ it("does not recreate queryRef or execute a network request when rerendering use
   const firstRender = await renderStream.takeRender();
   const initialQueryRef = firstRender.snapshot.queryRef;
 
-  await act(() => user.click(incrementButton));
+  await user.click(incrementButton);
 
   {
     const { snapshot } = await renderStream.takeRender();
@@ -641,7 +655,8 @@ it("disposes of the queryRef when unmounting before it is used by useReadQuery",
     return null;
   }
 
-  const { unmount } = renderStream.render(<App />, {
+  using _disabledAct = disableActEnvironment();
+  const { unmount } = await renderStream.render(<App />, {
     wrapper: createClientWrapper(client),
   });
 
@@ -677,7 +692,8 @@ it("disposes of old queryRefs when changing variables before the queryRef is use
     return null;
   }
 
-  const { rerender } = renderStream.render(<App id="1" />, {
+  using _disabledAct = disableActEnvironment();
+  const { rerender } = await renderStream.render(<App id="1" />, {
     wrapper: createClientWrapper(client),
   });
 
@@ -692,9 +708,9 @@ it("disposes of old queryRefs when changing variables before the queryRef is use
     expect(renderedComponents).toStrictEqual([App]);
   }
 
-  rerender(<App id="2" />);
+  await rerender(<App id="2" />);
 
-  await wait(0);
+  await wait(10);
 
   expect(client.getObservableQueries().size).toBe(1);
   expect(client).toHaveSuspenseCacheEntryUsing(query, {
@@ -721,7 +737,8 @@ it("does not prematurely dispose of the queryRef when using strict mode", async 
     return null;
   }
 
-  renderStream.render(<App />, {
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, {
     wrapper: createClientWrapper(client, React.StrictMode),
   });
 
@@ -760,12 +777,13 @@ it("disposes of the queryRef when unmounting before it is used by useReadQuery e
     );
   }
 
-  const { unmount } = renderStream.render(<App />, {
+  using _disabledAct = disableActEnvironment();
+  const { unmount } = await renderStream.render(<App />, {
     wrapper: createClientWrapper(client),
   });
   const button = screen.getByText("Increment");
 
-  await act(() => user.click(button));
+  await user.click(button);
 
   {
     const { renderedComponents } = await renderStream.takeRender();
@@ -816,7 +834,10 @@ it("allows the client to be overridden", async () => {
     );
   }
 
-  renderStream.render(<App />, { wrapper: createClientWrapper(globalClient) });
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, {
+    wrapper: createClientWrapper(globalClient),
+  });
 
   {
     const { renderedComponents } = await renderStream.takeRender();
@@ -872,7 +893,8 @@ it("passes context to the link", async () => {
     );
   }
 
-  renderStream.render(<App />, { wrapper: createMockWrapper({ link }) });
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, { wrapper: createMockWrapper({ link }) });
 
   {
     const { renderedComponents } = await renderStream.takeRender();
@@ -944,7 +966,8 @@ it('enables canonical results when canonizeResults is "true"', async () => {
     );
   }
 
-  renderStream.render(<App />, { wrapper: createMockWrapper({ cache }) });
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, { wrapper: createMockWrapper({ cache }) });
 
   const {
     snapshot: { result },
@@ -1013,7 +1036,8 @@ it("can disable canonical results when the cache's canonizeResults setting is tr
     );
   }
 
-  renderStream.render(<App />, { wrapper: createMockWrapper({ cache }) });
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, { wrapper: createMockWrapper({ cache }) });
 
   const { snapshot } = await renderStream.takeRender();
   const result = snapshot.result!;
@@ -1058,7 +1082,8 @@ it("returns initial cache data followed by network data when the fetch policy is
     );
   }
 
-  renderStream.render(<App />, { wrapper: createClientWrapper(client) });
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, { wrapper: createClientWrapper(client) });
 
   {
     const { snapshot, renderedComponents } = await renderStream.takeRender();
@@ -1122,7 +1147,8 @@ it("all data is present in the cache, no network request is made", async () => {
     );
   }
 
-  renderStream.render(<App />, { wrapper: createClientWrapper(client) });
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, { wrapper: createClientWrapper(client) });
 
   const { snapshot, renderedComponents } = await renderStream.takeRender();
 
@@ -1179,7 +1205,8 @@ it("partial data is present in the cache so it is ignored and network request is
     );
   }
 
-  renderStream.render(<App />, { wrapper: createClientWrapper(client) });
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, { wrapper: createClientWrapper(client) });
 
   {
     const { renderedComponents } = await renderStream.takeRender();
@@ -1231,7 +1258,8 @@ it("existing data in the cache is ignored when fetchPolicy is 'network-only'", a
     );
   }
 
-  renderStream.render(<App />, { wrapper: createClientWrapper(client) });
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, { wrapper: createClientWrapper(client) });
 
   {
     const { renderedComponents } = await renderStream.takeRender();
@@ -1285,7 +1313,8 @@ it("fetches data from the network but does not update the cache when fetchPolicy
     );
   }
 
-  renderStream.render(<App />, { wrapper: createClientWrapper(client) });
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, { wrapper: createClientWrapper(client) });
 
   {
     const { renderedComponents } = await renderStream.takeRender();
@@ -1399,7 +1428,8 @@ it("works with startTransition to change variables", async () => {
     );
   }
 
-  renderStream.render(<App />, { wrapper: createClientWrapper(client) });
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, { wrapper: createClientWrapper(client) });
 
   {
     const { renderedComponents } = await renderStream.takeRender();
@@ -1421,7 +1451,7 @@ it("works with startTransition to change variables", async () => {
     });
   }
 
-  await act(() => user.click(screen.getByText("Change todo")));
+  await user.click(screen.getByText("Change todo"));
 
   {
     const { snapshot, renderedComponents } = await renderStream.takeRender();
@@ -1516,7 +1546,8 @@ it('does not suspend deferred queries with data in the cache and using a "cache-
     );
   }
 
-  renderStream.render(<App />, { wrapper: createClientWrapper(client) });
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, { wrapper: createClientWrapper(client) });
 
   {
     const { snapshot, renderedComponents } = await renderStream.takeRender();
@@ -1620,7 +1651,8 @@ it("reacts to cache updates", async () => {
     );
   }
 
-  renderStream.render(<App />, { wrapper: createClientWrapper(client) });
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, { wrapper: createClientWrapper(client) });
 
   {
     const { renderedComponents } = await renderStream.takeRender();
@@ -1692,8 +1724,11 @@ it("reacts to variables updates", async () => {
     );
   }
 
-  const { rerender } = renderStream.render(<App id="1" />, {
-    wrapper: createMockWrapper({ mocks }),
+  using _disabledAct = disableActEnvironment();
+  const { rerender } = await renderStream.render(<App id="1" />, {
+    wrapper: createMockWrapper({
+      mocks: addDelayToMocks(mocks, 150, true),
+    }),
   });
 
   {
@@ -1714,7 +1749,7 @@ it("reacts to variables updates", async () => {
     });
   }
 
-  rerender(<App id="2" />);
+  await rerender(<App id="2" />);
 
   {
     const { renderedComponents } = await renderStream.takeRender();
@@ -1755,7 +1790,8 @@ it("does not suspend when `skip` is true", async () => {
     );
   }
 
-  renderStream.render(<App />, { wrapper: createMockWrapper({ mocks }) });
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, { wrapper: createMockWrapper({ mocks }) });
 
   const { renderedComponents } = await renderStream.takeRender();
 
@@ -1782,7 +1818,8 @@ it("does not suspend when using `skipToken` in options", async () => {
     );
   }
 
-  renderStream.render(<App />, { wrapper: createMockWrapper({ mocks }) });
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, { wrapper: createMockWrapper({ mocks }) });
 
   const { renderedComponents } = await renderStream.takeRender();
 
@@ -1814,7 +1851,8 @@ it("suspends when `skip` becomes `false` after it was `true`", async () => {
     );
   }
 
-  renderStream.render(<App />, { wrapper: createMockWrapper({ mocks }) });
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, { wrapper: createMockWrapper({ mocks }) });
 
   {
     const { renderedComponents } = await renderStream.takeRender();
@@ -1822,7 +1860,7 @@ it("suspends when `skip` becomes `false` after it was `true`", async () => {
     expect(renderedComponents).toStrictEqual([App]);
   }
 
-  await act(() => user.click(screen.getByText("Run query")));
+  await user.click(screen.getByText("Run query"));
 
   {
     const { renderedComponents } = await renderStream.takeRender();
@@ -1866,7 +1904,8 @@ it("suspends when switching away from `skipToken` in options", async () => {
     );
   }
 
-  renderStream.render(<App />, { wrapper: createMockWrapper({ mocks }) });
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, { wrapper: createMockWrapper({ mocks }) });
 
   {
     const { renderedComponents } = await renderStream.takeRender();
@@ -1874,7 +1913,7 @@ it("suspends when switching away from `skipToken` in options", async () => {
     expect(renderedComponents).toStrictEqual([App]);
   }
 
-  await act(() => user.click(screen.getByText("Run query")));
+  await user.click(screen.getByText("Run query"));
 
   {
     const { renderedComponents } = await renderStream.takeRender();
@@ -1918,7 +1957,8 @@ it("renders skip result, does not suspend, and maintains `data` when `skip` beco
     );
   }
 
-  renderStream.render(<App />, { wrapper: createMockWrapper({ mocks }) });
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, { wrapper: createMockWrapper({ mocks }) });
 
   {
     const { renderedComponents } = await renderStream.takeRender();
@@ -1936,7 +1976,7 @@ it("renders skip result, does not suspend, and maintains `data` when `skip` beco
     });
   }
 
-  await act(() => user.click(screen.getByText("Toggle skip")));
+  await user.click(screen.getByText("Toggle skip"));
 
   {
     const { snapshot, renderedComponents } = await renderStream.takeRender();
@@ -1974,7 +2014,8 @@ it("renders skip result, does not suspend, and maintains `data` when switching b
     );
   }
 
-  renderStream.render(<App />, { wrapper: createMockWrapper({ mocks }) });
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, { wrapper: createMockWrapper({ mocks }) });
 
   {
     const { renderedComponents } = await renderStream.takeRender();
@@ -1992,7 +2033,7 @@ it("renders skip result, does not suspend, and maintains `data` when switching b
     });
   }
 
-  await act(() => user.click(screen.getByText("Toggle skip")));
+  await user.click(screen.getByText("Toggle skip"));
 
   {
     const { snapshot, renderedComponents } = await renderStream.takeRender();
@@ -2055,14 +2096,15 @@ it("does not make network requests when `skip` is `true`", async () => {
     );
   }
 
-  renderStream.render(<App />, { wrapper: createClientWrapper(client) });
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, { wrapper: createClientWrapper(client) });
 
   // initial skipped result
   await renderStream.takeRender();
   expect(fetchCount).toBe(0);
 
   // Toggle skip to `false`
-  await act(() => user.click(screen.getByText("Toggle skip")));
+  await user.click(screen.getByText("Toggle skip"));
 
   expect(fetchCount).toBe(1);
   {
@@ -2082,7 +2124,7 @@ it("does not make network requests when `skip` is `true`", async () => {
   }
 
   // Toggle skip to `true`
-  await act(() => user.click(screen.getByText("Toggle skip")));
+  await user.click(screen.getByText("Toggle skip"));
 
   expect(fetchCount).toBe(1);
   {
@@ -2142,14 +2184,15 @@ it("does not make network requests when `skipToken` is used", async () => {
     );
   }
 
-  renderStream.render(<App />, { wrapper: createClientWrapper(client) });
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, { wrapper: createClientWrapper(client) });
 
   // initial skipped result
   await renderStream.takeRender();
   expect(fetchCount).toBe(0);
 
   // Toggle skip to `false`
-  await act(() => user.click(screen.getByText("Toggle skip")));
+  await user.click(screen.getByText("Toggle skip"));
 
   expect(fetchCount).toBe(1);
   {
@@ -2169,7 +2212,7 @@ it("does not make network requests when `skipToken` is used", async () => {
   }
 
   // Toggle skip to `true`
-  await act(() => user.click(screen.getByText("Toggle skip")));
+  await user.click(screen.getByText("Toggle skip"));
 
   expect(fetchCount).toBe(1);
   {
@@ -2229,7 +2272,8 @@ it("does not make network requests when `skipToken` is used in strict mode", asy
     );
   }
 
-  renderStream.render(<App />, {
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, {
     wrapper: createClientWrapper(client, React.StrictMode),
   });
 
@@ -2238,7 +2282,7 @@ it("does not make network requests when `skipToken` is used in strict mode", asy
   expect(fetchCount).toBe(0);
 
   // Toggle skip to `false`
-  await act(() => user.click(screen.getByText("Toggle skip")));
+  await user.click(screen.getByText("Toggle skip"));
   await renderStream.takeRender();
 
   {
@@ -2254,7 +2298,7 @@ it("does not make network requests when `skipToken` is used in strict mode", asy
   expect(fetchCount).toBe(1);
 
   // Toggle skip to `true`
-  await act(() => user.click(screen.getByText("Toggle skip")));
+  await user.click(screen.getByText("Toggle skip"));
 
   {
     const { snapshot } = await renderStream.takeRender();
@@ -2317,7 +2361,8 @@ it("does not make network requests when using `skip` option in strict mode", asy
     );
   }
 
-  renderStream.render(<App />, {
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, {
     wrapper: createClientWrapper(client, React.StrictMode),
   });
 
@@ -2326,7 +2371,7 @@ it("does not make network requests when using `skip` option in strict mode", asy
   expect(fetchCount).toBe(0);
 
   // Toggle skip to `false`
-  await act(() => user.click(screen.getByText("Toggle skip")));
+  await user.click(screen.getByText("Toggle skip"));
   await renderStream.takeRender();
 
   {
@@ -2342,7 +2387,7 @@ it("does not make network requests when using `skip` option in strict mode", asy
   expect(fetchCount).toBe(1);
 
   // Toggle skip to `true`
-  await act(() => user.click(screen.getByText("Toggle skip")));
+  await user.click(screen.getByText("Toggle skip"));
 
   {
     const { snapshot } = await renderStream.takeRender();
@@ -2379,7 +2424,8 @@ it("result is referentially stable", async () => {
     );
   }
 
-  const { rerender } = renderStream.render(<App />, {
+  using _disabledAct = disableActEnvironment();
+  const { rerender } = await renderStream.render(<App />, {
     wrapper: createMockWrapper({ mocks }),
   });
 
@@ -2401,7 +2447,7 @@ it("result is referentially stable", async () => {
     result = snapshot.result;
   }
 
-  rerender(<App />);
+  await rerender(<App />);
 
   {
     const { snapshot } = await renderStream.takeRender();
@@ -2450,7 +2496,8 @@ it("`skip` option works with `startTransition`", async () => {
     );
   }
 
-  renderStream.render(<App />, { wrapper: createMockWrapper({ mocks }) });
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, { wrapper: createMockWrapper({ mocks }) });
 
   {
     const { renderedComponents } = await renderStream.takeRender();
@@ -2459,7 +2506,7 @@ it("`skip` option works with `startTransition`", async () => {
   }
 
   // Toggle skip to `false`
-  await act(() => user.click(screen.getByText("Toggle skip")));
+  await user.click(screen.getByText("Toggle skip"));
 
   {
     const { snapshot, renderedComponents } = await renderStream.takeRender();
@@ -2529,7 +2576,8 @@ it("`skipToken` works with `startTransition`", async () => {
     );
   }
 
-  renderStream.render(<App />, { wrapper: createMockWrapper({ mocks }) });
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, { wrapper: createMockWrapper({ mocks }) });
 
   {
     const { renderedComponents } = await renderStream.takeRender();
@@ -2538,7 +2586,7 @@ it("`skipToken` works with `startTransition`", async () => {
   }
 
   // Toggle skip to `false`
-  await act(() => user.click(screen.getByText("Toggle skip")));
+  await user.click(screen.getByText("Toggle skip"));
 
   {
     const { snapshot, renderedComponents } = await renderStream.takeRender();
@@ -2613,7 +2661,8 @@ it("applies `errorPolicy` on next fetch when it changes between renders", async 
     );
   }
 
-  renderStream.render(<App />, { wrapper: createMockWrapper({ mocks }) });
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, { wrapper: createMockWrapper({ mocks }) });
 
   // initial render
   await renderStream.takeRender();
@@ -2628,10 +2677,10 @@ it("applies `errorPolicy` on next fetch when it changes between renders", async 
     });
   }
 
-  await act(() => user.click(screen.getByText("Change error policy")));
+  await user.click(screen.getByText("Change error policy"));
   await renderStream.takeRender();
 
-  await act(() => user.click(screen.getByText("Refetch greeting")));
+  await user.click(screen.getByText("Refetch greeting"));
   await renderStream.takeRender();
 
   {
@@ -2696,7 +2745,8 @@ it("applies `context` on next fetch when it changes between renders", async () =
     );
   }
 
-  renderStream.render(<App />, { wrapper: createClientWrapper(client) });
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, { wrapper: createClientWrapper(client) });
 
   {
     const { renderedComponents } = await renderStream.takeRender();
@@ -2714,10 +2764,10 @@ it("applies `context` on next fetch when it changes between renders", async () =
     });
   }
 
-  await act(() => user.click(screen.getByText("Update context")));
+  await user.click(screen.getByText("Update context"));
   await renderStream.takeRender();
 
-  await act(() => user.click(screen.getByText("Refetch")));
+  await user.click(screen.getByText("Refetch"));
   await renderStream.takeRender();
 
   {
@@ -2799,7 +2849,8 @@ it("returns canonical results immediately when `canonizeResults` changes from `f
     );
   }
 
-  renderStream.render(<App />, { wrapper: createMockWrapper({ cache }) });
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, { wrapper: createMockWrapper({ cache }) });
 
   {
     const { snapshot } = await renderStream.takeRender();
@@ -2813,7 +2864,7 @@ it("returns canonical results immediately when `canonizeResults` changes from `f
     expect(values).toEqual([0, 1, 1, 2, 3, 5]);
   }
 
-  await act(() => user.click(screen.getByText("Canonize results")));
+  await user.click(screen.getByText("Canonize results"));
 
   {
     const { snapshot } = await renderStream.takeRender();
@@ -2914,7 +2965,8 @@ it("applies changed `refetchWritePolicy` to next fetch when changing between ren
     );
   }
 
-  renderStream.render(<App />, { wrapper: createClientWrapper(client) });
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, { wrapper: createClientWrapper(client) });
 
   // initial suspended render
   await renderStream.takeRender();
@@ -2930,7 +2982,7 @@ it("applies changed `refetchWritePolicy` to next fetch when changing between ren
     expect(mergeParams).toEqual([[undefined, [2, 3, 5, 7, 11]]]);
   }
 
-  await act(() => user.click(screen.getByText("Refetch next")));
+  await user.click(screen.getByText("Refetch next"));
   await renderStream.takeRender();
 
   {
@@ -2950,10 +3002,10 @@ it("applies changed `refetchWritePolicy` to next fetch when changing between ren
     ]);
   }
 
-  await act(() => user.click(screen.getByText("Change refetch write policy")));
+  await user.click(screen.getByText("Change refetch write policy"));
   await renderStream.takeRender();
 
-  await act(() => user.click(screen.getByText("Refetch last")));
+  await user.click(screen.getByText("Refetch last"));
   await renderStream.takeRender();
 
   {
@@ -3058,7 +3110,8 @@ it("applies `returnPartialData` on next fetch when it changes between renders", 
     );
   }
 
-  renderStream.render(<App />, { wrapper: createClientWrapper(client) });
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, { wrapper: createClientWrapper(client) });
 
   // initial suspended render
   await renderStream.takeRender();
@@ -3075,7 +3128,7 @@ it("applies `returnPartialData` on next fetch when it changes between renders", 
     });
   }
 
-  await act(() => user.click(screen.getByText("Update partial data")));
+  await user.click(screen.getByText("Update partial data"));
   await renderStream.takeRender();
 
   cache.modify({
@@ -3161,7 +3214,8 @@ it("applies updated `fetchPolicy` on next fetch when it changes between renders"
     );
   }
 
-  renderStream.render(<App />, { wrapper: createClientWrapper(client) });
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, { wrapper: createClientWrapper(client) });
 
   {
     const { snapshot } = await renderStream.takeRender();
@@ -3179,7 +3233,7 @@ it("applies updated `fetchPolicy` on next fetch when it changes between renders"
     });
   }
 
-  await act(() => user.click(screen.getByText("Change fetch policy")));
+  await user.click(screen.getByText("Change fetch policy"));
   {
     const { snapshot } = await renderStream.takeRender();
 
@@ -3197,7 +3251,7 @@ it("applies updated `fetchPolicy` on next fetch when it changes between renders"
     });
   }
 
-  await act(() => user.click(screen.getByText("Refetch")));
+  await user.click(screen.getByText("Refetch"));
   await renderStream.takeRender();
 
   {
@@ -3298,7 +3352,8 @@ it("properly handles changing options along with changing `variables`", async ()
     );
   }
 
-  renderStream.render(<App />, { wrapper: createClientWrapper(client) });
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, { wrapper: createClientWrapper(client) });
 
   {
     const { snapshot } = await renderStream.takeRender();
@@ -3319,7 +3374,7 @@ it("properly handles changing options along with changing `variables`", async ()
     });
   }
 
-  await act(() => user.click(screen.getByText("Get second character")));
+  await user.click(screen.getByText("Get second character"));
   await renderStream.takeRender();
 
   {
@@ -3341,7 +3396,7 @@ it("properly handles changing options along with changing `variables`", async ()
     });
   }
 
-  await act(() => user.click(screen.getByText("Get first character")));
+  await user.click(screen.getByText("Get first character"));
 
   {
     const { snapshot } = await renderStream.takeRender();
@@ -3362,7 +3417,7 @@ it("properly handles changing options along with changing `variables`", async ()
     });
   }
 
-  await act(() => user.click(screen.getByText("Refetch")));
+  await user.click(screen.getByText("Refetch"));
   await renderStream.takeRender();
 
   {
@@ -3427,7 +3482,8 @@ it('does not suspend when partial data is in the cache and using a "cache-first"
     );
   }
 
-  renderStream.render(<App />, { wrapper: createClientWrapper(client) });
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, { wrapper: createClientWrapper(client) });
 
   {
     const { snapshot, renderedComponents } = await renderStream.takeRender();
@@ -3493,8 +3549,12 @@ it('suspends and does not use partial data from other variables in the cache whe
     );
   }
 
-  const { rerender } = renderStream.render(<App id="1" />, {
-    wrapper: createMockWrapper({ cache, mocks }),
+  using _disabledAct = disableActEnvironment();
+  const { rerender } = await renderStream.render(<App id="1" />, {
+    wrapper: createMockWrapper({
+      cache,
+      mocks: addDelayToMocks(mocks, 150, true),
+    }),
   });
 
   {
@@ -3521,7 +3581,7 @@ it('suspends and does not use partial data from other variables in the cache whe
     });
   }
 
-  rerender(<App id="2" />);
+  await rerender(<App id="2" />);
 
   {
     const { renderedComponents } = await renderStream.takeRender();
@@ -3588,7 +3648,8 @@ it('suspends when partial data is in the cache and using a "network-only" fetch 
     );
   }
 
-  renderStream.render(<App />, { wrapper: createClientWrapper(client) });
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, { wrapper: createClientWrapper(client) });
 
   {
     const { renderedComponents } = await renderStream.takeRender();
@@ -3655,7 +3716,8 @@ it('suspends when partial data is in the cache and using a "no-cache" fetch poli
     );
   }
 
-  renderStream.render(<App />, { wrapper: createClientWrapper(client) });
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, { wrapper: createClientWrapper(client) });
 
   {
     const { renderedComponents } = await renderStream.takeRender();
@@ -3755,7 +3817,8 @@ it('does not suspend when partial data is in the cache and using a "cache-and-ne
     );
   }
 
-  renderStream.render(<App />, { wrapper: createClientWrapper(client) });
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, { wrapper: createClientWrapper(client) });
 
   {
     const { snapshot, renderedComponents } = await renderStream.takeRender();
@@ -3821,8 +3884,12 @@ it('suspends and does not use partial data when changing variables and using a "
     );
   }
 
-  const { rerender } = renderStream.render(<App id="1" />, {
-    wrapper: createMockWrapper({ cache, mocks }),
+  using _disabledAct = disableActEnvironment();
+  const { rerender } = await renderStream.render(<App id="1" />, {
+    wrapper: createMockWrapper({
+      cache,
+      mocks: addDelayToMocks(mocks, 150, true),
+    }),
   });
 
   {
@@ -3849,7 +3916,7 @@ it('suspends and does not use partial data when changing variables and using a "
     });
   }
 
-  rerender(<App id="2" />);
+  await rerender(<App id="2" />);
 
   {
     const { renderedComponents } = await renderStream.takeRender();
@@ -3936,7 +4003,8 @@ it('does not suspend deferred queries with partial data in the cache and using a
     );
   }
 
-  renderStream.render(<App />, { wrapper: createClientWrapper(client) });
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, { wrapper: createClientWrapper(client) });
 
   {
     const { snapshot, renderedComponents } = await renderStream.takeRender();
@@ -4047,7 +4115,8 @@ it.each<SuspenseQueryHookFetchPolicy>([
       );
     }
 
-    renderStream.render(<App />, {
+    using _disabledAct = disableActEnvironment();
+    await renderStream.render(<App />, {
       wrapper: createClientWrapper(client, React.StrictMode),
     });
 
@@ -4085,6 +4154,915 @@ it.each<SuspenseQueryHookFetchPolicy>([
     await expect(renderStream).not.toRerender({ timeout: 50 });
   }
 );
+
+it("masks queries when dataMasking is `true`", async () => {
+  type UserFieldsFragment = {
+    age: number;
+  } & { " $fragmentName"?: "UserFieldsFragment" };
+
+  interface Query {
+    currentUser: {
+      __typename: "User";
+      id: number;
+      name: string;
+    } & { " $fragmentRefs"?: { UserFieldsFragment: UserFieldsFragment } };
+  }
+
+  const query: MaskedDocumentNode<Query, never> = gql`
+    query MaskedQuery {
+      currentUser {
+        id
+        name
+        ...UserFields
+      }
+    }
+
+    fragment UserFields on User {
+      age
+    }
+  `;
+
+  const mocks = [
+    {
+      request: { query },
+      result: {
+        data: {
+          currentUser: {
+            __typename: "User",
+            id: 1,
+            name: "Test User",
+            age: 30,
+          },
+        },
+      },
+    },
+  ];
+
+  const client = new ApolloClient({
+    dataMasking: true,
+    cache: new InMemoryCache(),
+    link: new MockLink(mocks),
+  });
+
+  const renderStream = createDefaultProfiler<Masked<Query>>();
+  const { SuspenseFallback, ReadQueryHook } =
+    createDefaultTrackedComponents(renderStream);
+
+  function App() {
+    useTrackRenders();
+    const [queryRef] = useBackgroundQuery(query);
+
+    return (
+      <Suspense fallback={<SuspenseFallback />}>
+        <ReadQueryHook queryRef={queryRef} />
+      </Suspense>
+    );
+  }
+
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, {
+    wrapper: createClientWrapper(client),
+  });
+
+  // loading
+  await renderStream.takeRender();
+
+  {
+    const { snapshot } = await renderStream.takeRender();
+
+    expect(snapshot.result).toEqual({
+      data: {
+        currentUser: {
+          __typename: "User",
+          id: 1,
+          name: "Test User",
+        },
+      },
+      error: undefined,
+      networkStatus: NetworkStatus.ready,
+    });
+  }
+});
+
+it("does not mask query when dataMasking is `false`", async () => {
+  type UserFieldsFragment = {
+    age: number;
+  } & { " $fragmentName"?: "UserFieldsFragment" };
+
+  interface Query {
+    currentUser: {
+      __typename: "User";
+      id: number;
+      name: string;
+    } & { " $fragmentRefs"?: { UserFieldsFragment: UserFieldsFragment } };
+  }
+
+  const query: TypedDocumentNode<Query, never> = gql`
+    query MaskedQuery {
+      currentUser {
+        id
+        name
+        ...UserFields
+      }
+    }
+
+    fragment UserFields on User {
+      age
+    }
+  `;
+
+  const mocks = [
+    {
+      request: { query },
+      result: {
+        data: {
+          currentUser: {
+            __typename: "User",
+            id: 1,
+            name: "Test User",
+            age: 30,
+          },
+        },
+      },
+    },
+  ];
+
+  const client = new ApolloClient({
+    dataMasking: false,
+    cache: new InMemoryCache(),
+    link: new MockLink(mocks),
+  });
+
+  const renderStream = createDefaultProfiler<Query>();
+  const { SuspenseFallback, ReadQueryHook } =
+    createDefaultTrackedComponents(renderStream);
+
+  function App() {
+    useTrackRenders();
+    const [queryRef] = useBackgroundQuery(query);
+
+    return (
+      <Suspense fallback={<SuspenseFallback />}>
+        <ReadQueryHook queryRef={queryRef} />
+      </Suspense>
+    );
+  }
+
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, { wrapper: createClientWrapper(client) });
+
+  // loading
+  await renderStream.takeRender();
+
+  const { snapshot } = await renderStream.takeRender();
+
+  expect(snapshot.result).toEqual({
+    data: {
+      currentUser: {
+        __typename: "User",
+        id: 1,
+        name: "Test User",
+        age: 30,
+      },
+    },
+    error: undefined,
+    networkStatus: NetworkStatus.ready,
+  });
+});
+
+it("does not mask query by default", async () => {
+  type UserFieldsFragment = {
+    age: number;
+  } & { " $fragmentName"?: "UserFieldsFragment" };
+
+  interface Query {
+    currentUser: {
+      __typename: "User";
+      id: number;
+      name: string;
+    } & { " $fragmentRefs"?: { UserFieldsFragment: UserFieldsFragment } };
+  }
+
+  const query: TypedDocumentNode<Query, never> = gql`
+    query MaskedQuery {
+      currentUser {
+        id
+        name
+        ...UserFields
+      }
+    }
+
+    fragment UserFields on User {
+      age
+    }
+  `;
+
+  const mocks = [
+    {
+      request: { query },
+      result: {
+        data: {
+          currentUser: {
+            __typename: "User",
+            id: 1,
+            name: "Test User",
+            age: 30,
+          },
+        },
+      },
+    },
+  ];
+
+  const client = new ApolloClient({
+    cache: new InMemoryCache(),
+    link: new MockLink(mocks),
+  });
+
+  const renderStream = createDefaultProfiler<Query>();
+  const { SuspenseFallback, ReadQueryHook } =
+    createDefaultTrackedComponents(renderStream);
+
+  function App() {
+    useTrackRenders();
+    const [queryRef] = useBackgroundQuery(query);
+
+    return (
+      <Suspense fallback={<SuspenseFallback />}>
+        <ReadQueryHook queryRef={queryRef} />
+      </Suspense>
+    );
+  }
+
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, { wrapper: createClientWrapper(client) });
+
+  // loading
+  await renderStream.takeRender();
+
+  const { snapshot } = await renderStream.takeRender();
+
+  expect(snapshot.result).toEqual({
+    data: {
+      currentUser: {
+        __typename: "User",
+        id: 1,
+        name: "Test User",
+        age: 30,
+      },
+    },
+    error: undefined,
+    networkStatus: NetworkStatus.ready,
+  });
+});
+
+it("masks queries updated by the cache", async () => {
+  type UserFieldsFragment = {
+    age: number;
+  } & { " $fragmentName"?: "UserFieldsFragment" };
+
+  interface Query {
+    currentUser: {
+      __typename: "User";
+      id: number;
+      name: string;
+    } & { " $fragmentRefs"?: { UserFieldsFragment: UserFieldsFragment } };
+  }
+
+  const query: MaskedDocumentNode<Query, never> = gql`
+    query MaskedQuery {
+      currentUser {
+        id
+        name
+        ...UserFields
+      }
+    }
+
+    fragment UserFields on User {
+      age
+    }
+  `;
+
+  const mocks = [
+    {
+      request: { query },
+      result: {
+        data: {
+          currentUser: {
+            __typename: "User",
+            id: 1,
+            name: "Test User",
+            age: 30,
+          },
+        },
+      },
+    },
+  ];
+
+  const client = new ApolloClient({
+    dataMasking: true,
+    cache: new InMemoryCache(),
+    link: new MockLink(mocks),
+  });
+
+  const renderStream = createDefaultProfiler<Masked<Query>>();
+  const { SuspenseFallback, ReadQueryHook } =
+    createDefaultTrackedComponents(renderStream);
+
+  function App() {
+    useTrackRenders();
+    const [queryRef] = useBackgroundQuery(query);
+
+    return (
+      <Suspense fallback={<SuspenseFallback />}>
+        <ReadQueryHook queryRef={queryRef} />
+      </Suspense>
+    );
+  }
+
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, { wrapper: createClientWrapper(client) });
+
+  // loading
+  await renderStream.takeRender();
+
+  {
+    const { snapshot } = await renderStream.takeRender();
+
+    expect(snapshot.result).toEqual({
+      data: {
+        currentUser: {
+          __typename: "User",
+          id: 1,
+          name: "Test User",
+        },
+      },
+      error: undefined,
+      networkStatus: NetworkStatus.ready,
+    });
+  }
+
+  client.writeQuery({
+    query,
+    data: {
+      currentUser: {
+        __typename: "User",
+        id: 1,
+        name: "Test User (updated)",
+        // @ts-ignore TODO: Determine how to handle cache writes with masked
+        // query type
+        age: 35,
+      },
+    },
+  });
+
+  {
+    const { snapshot } = await renderStream.takeRender();
+
+    expect(snapshot.result).toEqual({
+      data: {
+        currentUser: {
+          __typename: "User",
+          id: 1,
+          name: "Test User (updated)",
+        },
+      },
+      error: undefined,
+      networkStatus: NetworkStatus.ready,
+    });
+  }
+});
+
+it("does not rerender when updating field in named fragment", async () => {
+  type UserFieldsFragment = {
+    age: number;
+  } & { " $fragmentName"?: "UserFieldsFragment" };
+
+  interface Query {
+    currentUser: {
+      __typename: "User";
+      id: number;
+      name: string;
+    } & { " $fragmentRefs"?: { UserFieldsFragment: UserFieldsFragment } };
+  }
+
+  const query: MaskedDocumentNode<Query, never> = gql`
+    query MaskedQuery {
+      currentUser {
+        id
+        name
+        ...UserFields
+      }
+    }
+
+    fragment UserFields on User {
+      age
+    }
+  `;
+
+  const mocks = [
+    {
+      request: { query },
+      result: {
+        data: {
+          currentUser: {
+            __typename: "User",
+            id: 1,
+            name: "Test User",
+            age: 30,
+          },
+        },
+      },
+    },
+  ];
+
+  const client = new ApolloClient({
+    dataMasking: true,
+    cache: new InMemoryCache(),
+    link: new MockLink(mocks),
+  });
+
+  const renderStream = createDefaultProfiler<Masked<Query>>();
+  const { SuspenseFallback, ReadQueryHook } =
+    createDefaultTrackedComponents(renderStream);
+
+  function App() {
+    useTrackRenders();
+    const [queryRef] = useBackgroundQuery(query);
+
+    return (
+      <Suspense fallback={<SuspenseFallback />}>
+        <ReadQueryHook queryRef={queryRef} />
+      </Suspense>
+    );
+  }
+
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, {
+    wrapper: createClientWrapper(client),
+  });
+
+  // loading
+  await renderStream.takeRender();
+
+  {
+    const { snapshot } = await renderStream.takeRender();
+
+    expect(snapshot.result).toEqual({
+      data: {
+        currentUser: {
+          __typename: "User",
+          id: 1,
+          name: "Test User",
+        },
+      },
+      error: undefined,
+      networkStatus: NetworkStatus.ready,
+    });
+  }
+
+  client.writeQuery({
+    query,
+    data: {
+      currentUser: {
+        __typename: "User",
+        id: 1,
+        name: "Test User",
+        // @ts-ignore TODO: Determine how to handle cache writes with masked
+        // query type
+        age: 35,
+      },
+    },
+  });
+
+  await expect(renderStream).not.toRerender();
+
+  expect(client.readQuery({ query })).toEqual({
+    currentUser: {
+      __typename: "User",
+      id: 1,
+      name: "Test User",
+      age: 35,
+    },
+  });
+});
+
+it("masks result from cache when using with cache-first fetch policy", async () => {
+  type UserFieldsFragment = {
+    age: number;
+  } & { " $fragmentName"?: "UserFieldsFragment" };
+
+  interface Query {
+    currentUser: {
+      __typename: "User";
+      id: number;
+      name: string;
+    } & { " $fragmentRefs"?: { UserFieldsFragment: UserFieldsFragment } };
+  }
+
+  const query: MaskedDocumentNode<Query, never> = gql`
+    query MaskedQuery {
+      currentUser {
+        id
+        name
+        ...UserFields
+      }
+    }
+
+    fragment UserFields on User {
+      age
+    }
+  `;
+
+  const mocks = [
+    {
+      request: { query },
+      result: {
+        data: {
+          currentUser: {
+            __typename: "User",
+            id: 1,
+            name: "Test User",
+            age: 30,
+          },
+        },
+      },
+    },
+  ];
+
+  const client = new ApolloClient({
+    dataMasking: true,
+    cache: new InMemoryCache(),
+    link: new MockLink(mocks),
+  });
+
+  client.writeQuery({
+    query,
+    data: {
+      currentUser: {
+        __typename: "User",
+        id: 1,
+        name: "Test User",
+        age: 30,
+      },
+    },
+  });
+
+  const renderStream = createDefaultProfiler<Masked<Query>>();
+  const { SuspenseFallback, ReadQueryHook } =
+    createDefaultTrackedComponents(renderStream);
+
+  function App() {
+    useTrackRenders();
+    const [queryRef] = useBackgroundQuery(query, {
+      fetchPolicy: "cache-first",
+    });
+
+    return (
+      <Suspense fallback={<SuspenseFallback />}>
+        <ReadQueryHook queryRef={queryRef} />
+      </Suspense>
+    );
+  }
+
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, { wrapper: createClientWrapper(client) });
+
+  const { snapshot } = await renderStream.takeRender();
+
+  expect(snapshot.result).toEqual({
+    data: {
+      currentUser: {
+        __typename: "User",
+        id: 1,
+        name: "Test User",
+      },
+    },
+    error: undefined,
+    networkStatus: NetworkStatus.ready,
+  });
+});
+
+it("masks cache and network result when using cache-and-network fetch policy", async () => {
+  type UserFieldsFragment = {
+    age: number;
+  } & { " $fragmentName"?: "UserFieldsFragment" };
+
+  interface Query {
+    currentUser: {
+      __typename: "User";
+      id: number;
+      name: string;
+    } & { " $fragmentRefs"?: { UserFieldsFragment: UserFieldsFragment } };
+  }
+
+  const query: MaskedDocumentNode<Query, never> = gql`
+    query MaskedQuery {
+      currentUser {
+        id
+        name
+        ...UserFields
+      }
+    }
+
+    fragment UserFields on User {
+      age
+    }
+  `;
+
+  const mocks = [
+    {
+      request: { query },
+      result: {
+        data: {
+          currentUser: {
+            __typename: "User",
+            id: 1,
+            name: "Test User (server)",
+            age: 35,
+          },
+        },
+      },
+      delay: 20,
+    },
+  ];
+
+  const client = new ApolloClient({
+    dataMasking: true,
+    cache: new InMemoryCache(),
+    link: new MockLink(mocks),
+  });
+
+  client.writeQuery({
+    query,
+    data: {
+      currentUser: {
+        __typename: "User",
+        id: 1,
+        name: "Test User",
+        age: 34,
+      },
+    },
+  });
+
+  const renderStream = createDefaultProfiler<Masked<Query>>();
+  const { SuspenseFallback, ReadQueryHook } =
+    createDefaultTrackedComponents(renderStream);
+
+  function App() {
+    useTrackRenders();
+    const [queryRef] = useBackgroundQuery(query, {
+      fetchPolicy: "cache-and-network",
+    });
+
+    return (
+      <Suspense fallback={<SuspenseFallback />}>
+        <ReadQueryHook queryRef={queryRef} />
+      </Suspense>
+    );
+  }
+
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, { wrapper: createClientWrapper(client) });
+
+  {
+    const { snapshot } = await renderStream.takeRender();
+
+    expect(snapshot.result).toEqual({
+      data: {
+        currentUser: {
+          __typename: "User",
+          id: 1,
+          name: "Test User",
+        },
+      },
+      error: undefined,
+      networkStatus: NetworkStatus.loading,
+    });
+  }
+
+  {
+    const { snapshot } = await renderStream.takeRender();
+
+    expect(snapshot.result).toEqual({
+      data: {
+        currentUser: {
+          __typename: "User",
+          id: 1,
+          name: "Test User (server)",
+        },
+      },
+      error: undefined,
+      networkStatus: NetworkStatus.ready,
+    });
+  }
+});
+
+it("masks partial cache data when returnPartialData is `true`", async () => {
+  type UserFieldsFragment = {
+    __typename: "User";
+    age: number;
+  } & { " $fragmentName"?: "UserFieldsFragment" };
+
+  interface Query {
+    currentUser: {
+      __typename: "User";
+      id: number;
+      name: string;
+    } & { " $fragmentRefs"?: { UserFieldsFragment: UserFieldsFragment } };
+  }
+
+  const query: MaskedDocumentNode<Query, never> = gql`
+    query MaskedQuery {
+      currentUser {
+        id
+        name
+        ...UserFields
+      }
+    }
+
+    fragment UserFields on User {
+      age
+    }
+  `;
+
+  const mocks = [
+    {
+      request: { query },
+      result: {
+        data: {
+          currentUser: {
+            __typename: "User",
+            id: 1,
+            name: "Test User (server)",
+            age: 35,
+          },
+        },
+      },
+      delay: 20,
+    },
+  ];
+
+  const client = new ApolloClient({
+    dataMasking: true,
+    cache: new InMemoryCache(),
+    link: new MockLink(mocks),
+  });
+
+  {
+    using _ = spyOnConsole("error");
+    client.writeQuery({
+      query,
+      data: {
+        // @ts-expect-error writing partial cache data
+        currentUser: {
+          __typename: "User",
+          id: 1,
+          age: 34,
+        },
+      },
+    });
+  }
+
+  const renderStream = createDefaultProfiler<DeepPartial<Masked<Query>>>();
+  const { SuspenseFallback, ReadQueryHook } =
+    createDefaultTrackedComponents(renderStream);
+
+  function App() {
+    useTrackRenders();
+    const [queryRef] = useBackgroundQuery(query, { returnPartialData: true });
+
+    return (
+      <Suspense fallback={<SuspenseFallback />}>
+        <ReadQueryHook queryRef={queryRef} />
+      </Suspense>
+    );
+  }
+
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, { wrapper: createClientWrapper(client) });
+
+  {
+    const { snapshot } = await renderStream.takeRender();
+
+    expect(snapshot.result).toEqual({
+      data: {
+        currentUser: {
+          __typename: "User",
+          id: 1,
+        },
+      },
+      error: undefined,
+      networkStatus: NetworkStatus.loading,
+    });
+  }
+
+  {
+    const { snapshot } = await renderStream.takeRender();
+
+    expect(snapshot.result).toEqual({
+      data: {
+        currentUser: {
+          __typename: "User",
+          id: 1,
+          name: "Test User (server)",
+        },
+      },
+      error: undefined,
+      networkStatus: NetworkStatus.ready,
+    });
+  }
+});
+
+it("masks partial data returned from data on errors with errorPolicy `all`", async () => {
+  type UserFieldsFragment = {
+    age: number;
+  } & { " $fragmentName"?: "UserFieldsFragment" };
+
+  interface Query {
+    currentUser: {
+      __typename: "User";
+      id: number;
+      name: string;
+    } & { " $fragmentRefs"?: { UserFieldsFragment: UserFieldsFragment } };
+  }
+
+  const query: MaskedDocumentNode<Query, never> = gql`
+    query MaskedQuery {
+      currentUser {
+        id
+        name
+        ...UserFields
+      }
+    }
+
+    fragment UserFields on User {
+      age
+    }
+  `;
+
+  const mocks = [
+    {
+      request: { query },
+      result: {
+        data: {
+          currentUser: {
+            __typename: "User",
+            id: 1,
+            name: null,
+            age: 34,
+          },
+        },
+        errors: [new GraphQLError("Couldn't get name")],
+      },
+      delay: 20,
+    },
+  ];
+
+  const client = new ApolloClient({
+    dataMasking: true,
+    cache: new InMemoryCache(),
+    link: new MockLink(mocks),
+  });
+
+  const renderStream = createDefaultProfiler<Masked<Query> | undefined>();
+  const { SuspenseFallback, ReadQueryHook } =
+    createDefaultTrackedComponents(renderStream);
+
+  function App() {
+    useTrackRenders();
+    const [queryRef] = useBackgroundQuery(query, { errorPolicy: "all" });
+
+    return (
+      <Suspense fallback={<SuspenseFallback />}>
+        <ReadQueryHook queryRef={queryRef} />
+      </Suspense>
+    );
+  }
+
+  using _disabledAct = disableActEnvironment();
+  await renderStream.render(<App />, { wrapper: createClientWrapper(client) });
+
+  // loading
+  await renderStream.takeRender();
+
+  {
+    const { snapshot } = await renderStream.takeRender();
+
+    expect(snapshot.result).toEqual({
+      data: {
+        currentUser: {
+          __typename: "User",
+          id: 1,
+          name: null,
+        },
+      },
+      error: new ApolloError({
+        graphQLErrors: [new GraphQLError("Couldn't get name")],
+      }),
+      networkStatus: NetworkStatus.error,
+    });
+  }
+});
 
 describe("refetch", () => {
   it("re-suspends when calling `refetch`", async () => {
@@ -4127,7 +5105,10 @@ describe("refetch", () => {
       );
     }
 
-    renderStream.render(<App />, { wrapper: createMockWrapper({ mocks }) });
+    using _disabledAct = disableActEnvironment();
+    await renderStream.render(<App />, {
+      wrapper: createMockWrapper({ mocks }),
+    });
 
     {
       const { renderedComponents } = await renderStream.takeRender();
@@ -4151,7 +5132,7 @@ describe("refetch", () => {
       });
     }
 
-    await act(() => user.click(screen.getByText("Refetch")));
+    await user.click(screen.getByText("Refetch"));
 
     {
       // parent component re-suspends
@@ -4202,7 +5183,10 @@ describe("refetch", () => {
       );
     }
 
-    renderStream.render(<App />, { wrapper: createMockWrapper({ mocks }) });
+    using _disabledAct = disableActEnvironment();
+    await renderStream.render(<App />, {
+      wrapper: createMockWrapper({ mocks }),
+    });
 
     {
       const { renderedComponents } = await renderStream.takeRender();
@@ -4226,7 +5210,7 @@ describe("refetch", () => {
       });
     }
 
-    await act(() => user.click(screen.getByText("Refetch")));
+    await user.click(screen.getByText("Refetch"));
 
     {
       const { renderedComponents } = await renderStream.takeRender();
@@ -4306,7 +5290,10 @@ describe("refetch", () => {
       );
     }
 
-    renderStream.render(<App />, { wrapper: createMockWrapper({ mocks }) });
+    using _disabledAct = disableActEnvironment();
+    await renderStream.render(<App />, {
+      wrapper: createMockWrapper({ mocks }),
+    });
 
     {
       const { renderedComponents } = await renderStream.takeRender();
@@ -4328,7 +5315,7 @@ describe("refetch", () => {
 
     const button = screen.getByText("Refetch");
 
-    await act(() => user.click(button));
+    await user.click(button);
 
     {
       const { renderedComponents } = await renderStream.takeRender();
@@ -4352,7 +5339,7 @@ describe("refetch", () => {
       });
     }
 
-    await act(() => user.click(button));
+    await user.click(button);
 
     {
       const { renderedComponents } = await renderStream.takeRender();
@@ -4417,7 +5404,10 @@ describe("refetch", () => {
       );
     }
 
-    renderStream.render(<App />, { wrapper: createMockWrapper({ mocks }) });
+    using _disabledAct = disableActEnvironment();
+    await renderStream.render(<App />, {
+      wrapper: createMockWrapper({ mocks }),
+    });
 
     {
       const { renderedComponents } = await renderStream.takeRender();
@@ -4444,7 +5434,7 @@ describe("refetch", () => {
       });
     }
 
-    await act(() => user.click(screen.getByText("Refetch")));
+    await user.click(screen.getByText("Refetch"));
 
     {
       const { renderedComponents } = await renderStream.takeRender();
@@ -4504,7 +5494,10 @@ describe("refetch", () => {
       );
     }
 
-    renderStream.render(<App />, { wrapper: createMockWrapper({ mocks }) });
+    using _disabledAct = disableActEnvironment();
+    await renderStream.render(<App />, {
+      wrapper: createMockWrapper({ mocks }),
+    });
 
     {
       const { renderedComponents } = await renderStream.takeRender();
@@ -4531,7 +5524,7 @@ describe("refetch", () => {
       });
     }
 
-    await act(() => user.click(screen.getByText("Refetch")));
+    await user.click(screen.getByText("Refetch"));
 
     {
       const { renderedComponents } = await renderStream.takeRender();
@@ -4599,7 +5592,10 @@ describe("refetch", () => {
       );
     }
 
-    renderStream.render(<App />, { wrapper: createMockWrapper({ mocks }) });
+    using _disabledAct = disableActEnvironment();
+    await renderStream.render(<App />, {
+      wrapper: createMockWrapper({ mocks }),
+    });
 
     {
       const { renderedComponents } = await renderStream.takeRender();
@@ -4626,7 +5622,7 @@ describe("refetch", () => {
       });
     }
 
-    await act(() => user.click(screen.getByText("Refetch")));
+    await user.click(screen.getByText("Refetch"));
 
     {
       const { renderedComponents } = await renderStream.takeRender();
@@ -4697,7 +5693,10 @@ describe("refetch", () => {
       );
     }
 
-    renderStream.render(<App />, { wrapper: createMockWrapper({ mocks }) });
+    using _disabledAct = disableActEnvironment();
+    await renderStream.render(<App />, {
+      wrapper: createMockWrapper({ mocks }),
+    });
 
     {
       const { renderedComponents } = await renderStream.takeRender();
@@ -4724,7 +5723,7 @@ describe("refetch", () => {
       });
     }
 
-    await act(() => user.click(screen.getByText("Refetch")));
+    await user.click(screen.getByText("Refetch"));
 
     {
       const { renderedComponents } = await renderStream.takeRender();
@@ -4834,7 +5833,10 @@ describe("refetch", () => {
       return null;
     }
 
-    renderStream.render(<App />, { wrapper: createMockWrapper({ mocks }) });
+    using _disabledAct = disableActEnvironment();
+    await renderStream.render(<App />, {
+      wrapper: createMockWrapper({ mocks }),
+    });
 
     {
       const { renderedComponents } = await renderStream.takeRender();
@@ -4856,7 +5858,7 @@ describe("refetch", () => {
       });
     }
 
-    await act(() => user.click(screen.getByText("Retry")));
+    await user.click(screen.getByText("Retry"));
 
     {
       const { renderedComponents } = await renderStream.takeRender();
@@ -4964,7 +5966,10 @@ describe("refetch", () => {
       return null;
     }
 
-    renderStream.render(<App />, { wrapper: createMockWrapper({ mocks }) });
+    using _disabledAct = disableActEnvironment();
+    await renderStream.render(<App />, {
+      wrapper: createMockWrapper({ mocks }),
+    });
 
     {
       const { renderedComponents } = await renderStream.takeRender();
@@ -4984,7 +5989,7 @@ describe("refetch", () => {
       });
     }
 
-    await act(() => user.click(screen.getByText("Retry")));
+    await user.click(screen.getByText("Retry"));
 
     {
       const { renderedComponents } = await renderStream.takeRender();
@@ -5071,7 +6076,7 @@ describe("refetch", () => {
           <button
             onClick={() => {
               startTransition(() => {
-                refetch();
+                void refetch();
               });
             }}
           >
@@ -5084,7 +6089,10 @@ describe("refetch", () => {
       );
     }
 
-    renderStream.render(<App />, { wrapper: createMockWrapper({ mocks }) });
+    using _disabledAct = disableActEnvironment();
+    await renderStream.render(<App />, {
+      wrapper: createMockWrapper({ mocks }),
+    });
 
     {
       const { renderedComponents } = await renderStream.takeRender();
@@ -5105,7 +6113,7 @@ describe("refetch", () => {
       });
     }
 
-    await act(() => user.click(screen.getByText("Refetch")));
+    await user.click(screen.getByText("Refetch"));
 
     {
       // startTransition will avoid rendering the suspense fallback for already
@@ -5216,7 +6224,10 @@ describe("refetch", () => {
       );
     }
 
-    renderStream.render(<App />, { wrapper: createClientWrapper(client) });
+    using _disabledAct = disableActEnvironment();
+    await renderStream.render(<App />, {
+      wrapper: createClientWrapper(client),
+    });
 
     {
       const { renderedComponents } = await renderStream.takeRender();
@@ -5235,7 +6246,7 @@ describe("refetch", () => {
       expect(mergeParams).toEqual([[undefined, [2, 3, 5, 7, 11]]]);
     }
 
-    await act(() => user.click(screen.getByText("Refetch")));
+    await user.click(screen.getByText("Refetch"));
 
     {
       const { renderedComponents } = await renderStream.takeRender();
@@ -5330,7 +6341,10 @@ describe("refetch", () => {
       );
     }
 
-    renderStream.render(<App />, { wrapper: createClientWrapper(client) });
+    using _disabledAct = disableActEnvironment();
+    await renderStream.render(<App />, {
+      wrapper: createClientWrapper(client),
+    });
 
     {
       const { renderedComponents } = await renderStream.takeRender();
@@ -5349,7 +6363,7 @@ describe("refetch", () => {
       expect(mergeParams).toEqual([[undefined, [2, 3, 5, 7, 11]]]);
     }
 
-    await act(() => user.click(screen.getByText("Refetch")));
+    await user.click(screen.getByText("Refetch"));
 
     {
       const { renderedComponents } = await renderStream.takeRender();
@@ -5408,7 +6422,8 @@ describe("fetchMore", () => {
       );
     }
 
-    renderStream.render(<App />, {
+    using _disabledAct = disableActEnvironment();
+    await renderStream.render(<App />, {
       wrapper: createMockWrapper({ cache, link }),
     });
 
@@ -5432,7 +6447,7 @@ describe("fetchMore", () => {
       });
     }
 
-    await act(() => user.click(screen.getByText("Fetch more")));
+    await user.click(screen.getByText("Fetch more"));
 
     {
       const { renderedComponents } = await renderStream.takeRender();
@@ -5489,7 +6504,10 @@ describe("fetchMore", () => {
       );
     }
 
-    renderStream.render(<App />, { wrapper: createMockWrapper({ link }) });
+    using _disabledAct = disableActEnvironment();
+    await renderStream.render(<App />, {
+      wrapper: createMockWrapper({ link }),
+    });
 
     {
       const { renderedComponents } = await renderStream.takeRender();
@@ -5511,7 +6529,7 @@ describe("fetchMore", () => {
       });
     }
 
-    await act(() => user.click(screen.getByText("Fetch more")));
+    await user.click(screen.getByText("Fetch more"));
 
     {
       const { renderedComponents } = await renderStream.takeRender();
@@ -5577,7 +6595,10 @@ describe("fetchMore", () => {
       );
     }
 
-    renderStream.render(<App />, { wrapper: createClientWrapper(client) });
+    using _disabledAct = disableActEnvironment();
+    await renderStream.render(<App />, {
+      wrapper: createClientWrapper(client),
+    });
 
     {
       const { renderedComponents } = await renderStream.takeRender();
@@ -5599,7 +6620,7 @@ describe("fetchMore", () => {
       });
     }
 
-    await act(() => user.click(screen.getByText("Fetch more")));
+    await user.click(screen.getByText("Fetch more"));
 
     {
       const { renderedComponents } = await renderStream.takeRender();
@@ -5726,7 +6747,7 @@ describe("fetchMore", () => {
           <button
             onClick={() => {
               startTransition(() => {
-                fetchMore({ variables: { offset: 1 } });
+                void fetchMore({ variables: { offset: 1 } });
               });
             }}
           >
@@ -5739,7 +6760,10 @@ describe("fetchMore", () => {
       );
     }
 
-    renderStream.render(<App />, { wrapper: createClientWrapper(client) });
+    using _disabledAct = disableActEnvironment();
+    await renderStream.render(<App />, {
+      wrapper: createClientWrapper(client),
+    });
 
     {
       const { renderedComponents } = await renderStream.takeRender();
@@ -5769,7 +6793,7 @@ describe("fetchMore", () => {
       });
     }
 
-    await act(() => user.click(screen.getByText("Load more")));
+    await user.click(screen.getByText("Load more"));
 
     {
       // startTransition will avoid rendering the suspense fallback for already
@@ -5939,7 +6963,7 @@ describe("fetchMore", () => {
           <button
             onClick={() => {
               startTransition(() => {
-                fetchMore({ variables: { offset: 1 } });
+                void fetchMore({ variables: { offset: 1 } });
               });
             }}
           >
@@ -5952,7 +6976,10 @@ describe("fetchMore", () => {
       );
     }
 
-    renderStream.render(<App />, { wrapper: createClientWrapper(client) });
+    using _disabledAct = disableActEnvironment();
+    await renderStream.render(<App />, {
+      wrapper: createClientWrapper(client),
+    });
 
     {
       const { renderedComponents } = await renderStream.takeRender();
@@ -5982,7 +7009,7 @@ describe("fetchMore", () => {
       });
     }
 
-    await act(() => user.click(screen.getByText("Load more")));
+    await user.click(screen.getByText("Load more"));
 
     {
       const { snapshot, renderedComponents } = await renderStream.takeRender();
@@ -6107,7 +7134,10 @@ describe("fetchMore", () => {
       );
     }
 
-    renderStream.render(<App />, { wrapper: createClientWrapper(client) });
+    using _disabledAct = disableActEnvironment();
+    await renderStream.render(<App />, {
+      wrapper: createClientWrapper(client),
+    });
 
     {
       const { renderedComponents } = await renderStream.takeRender();
@@ -6213,6 +7243,38 @@ describe.skip("type tests", () => {
 
     expectTypeOf(explicit).toEqualTypeOf<VariablesCaseData>();
     expectTypeOf(explicit).not.toEqualTypeOf<VariablesCaseData | undefined>();
+
+    const { query: maskedQuery } = setupMaskedVariablesCase();
+
+    {
+      const [queryRef] = useBackgroundQuery(maskedQuery);
+      const { data } = useReadQuery(queryRef);
+
+      expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData>();
+      expectTypeOf(data).not.toEqualTypeOf<UnmaskedVariablesCaseData>();
+    }
+
+    {
+      const [queryRef] = useBackgroundQuery<
+        MaskedVariablesCaseData,
+        VariablesCaseVariables
+      >(maskedQuery);
+      const { data } = useReadQuery(queryRef);
+
+      expectTypeOf(data).toEqualTypeOf<UnmaskedVariablesCaseData>();
+      expectTypeOf(data).not.toEqualTypeOf<MaskedVariablesCaseData>();
+    }
+
+    {
+      const [queryRef] = useBackgroundQuery<
+        Masked<MaskedVariablesCaseData>,
+        VariablesCaseVariables
+      >(maskedQuery);
+      const { data } = useReadQuery(queryRef);
+
+      expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData>();
+      expectTypeOf(data).not.toEqualTypeOf<UnmaskedVariablesCaseData>();
+    }
   });
 
   it('returns TData | undefined with errorPolicy: "ignore"', () => {
@@ -6237,6 +7299,38 @@ describe.skip("type tests", () => {
 
     expectTypeOf(explicit).toEqualTypeOf<VariablesCaseData | undefined>();
     expectTypeOf(explicit).not.toEqualTypeOf<VariablesCaseData>();
+
+    const { query: maskedQuery } = setupMaskedVariablesCase();
+
+    {
+      const [queryRef] = useBackgroundQuery(maskedQuery);
+      const { data } = useReadQuery(queryRef);
+
+      expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData>();
+      expectTypeOf(data).not.toEqualTypeOf<UnmaskedVariablesCaseData>();
+    }
+
+    {
+      const [queryRef] = useBackgroundQuery<
+        MaskedVariablesCaseData,
+        VariablesCaseVariables
+      >(maskedQuery);
+      const { data } = useReadQuery(queryRef);
+
+      expectTypeOf(data).toEqualTypeOf<UnmaskedVariablesCaseData>();
+      expectTypeOf(data).not.toEqualTypeOf<MaskedVariablesCaseData>();
+    }
+
+    {
+      const [queryRef] = useBackgroundQuery<
+        Masked<MaskedVariablesCaseData>,
+        VariablesCaseVariables
+      >(maskedQuery);
+      const { data } = useReadQuery(queryRef);
+
+      expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData>();
+      expectTypeOf(data).not.toEqualTypeOf<UnmaskedVariablesCaseData>();
+    }
   });
 
   it('returns TData | undefined with errorPolicy: "all"', () => {
@@ -6257,6 +7351,46 @@ describe.skip("type tests", () => {
 
     expectTypeOf(explicit).toEqualTypeOf<VariablesCaseData | undefined>();
     expectTypeOf(explicit).not.toEqualTypeOf<VariablesCaseData>();
+
+    const { query: maskedQuery } = setupMaskedVariablesCase();
+
+    {
+      const [queryRef] = useBackgroundQuery(maskedQuery, {
+        errorPolicy: "all",
+      });
+      const { data } = useReadQuery(queryRef);
+
+      expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData | undefined>();
+      expectTypeOf(data).not.toEqualTypeOf<
+        UnmaskedVariablesCaseData | undefined
+      >();
+    }
+
+    {
+      const [queryRef] = useBackgroundQuery<
+        MaskedVariablesCaseData,
+        VariablesCaseVariables
+      >(maskedQuery, { errorPolicy: "all" });
+      const { data } = useReadQuery(queryRef);
+
+      expectTypeOf(data).toEqualTypeOf<UnmaskedVariablesCaseData | undefined>();
+      expectTypeOf(data).not.toEqualTypeOf<
+        MaskedVariablesCaseData | undefined
+      >();
+    }
+
+    {
+      const [queryRef] = useBackgroundQuery<
+        Masked<MaskedVariablesCaseData>,
+        VariablesCaseVariables
+      >(maskedQuery, { errorPolicy: "all" });
+      const { data } = useReadQuery(queryRef);
+
+      expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData | undefined>();
+      expectTypeOf(data).not.toEqualTypeOf<
+        UnmaskedVariablesCaseData | undefined
+      >();
+    }
   });
 
   it('returns TData with errorPolicy: "none"', () => {
@@ -6277,6 +7411,40 @@ describe.skip("type tests", () => {
 
     expectTypeOf(explicit).toEqualTypeOf<VariablesCaseData>();
     expectTypeOf(explicit).not.toEqualTypeOf<VariablesCaseData | undefined>();
+
+    const { query: maskedQuery } = setupMaskedVariablesCase();
+
+    {
+      const [queryRef] = useBackgroundQuery(maskedQuery, {
+        errorPolicy: "none",
+      });
+      const { data } = useReadQuery(queryRef);
+
+      expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData>();
+      expectTypeOf(data).not.toEqualTypeOf<UnmaskedVariablesCaseData>();
+    }
+
+    {
+      const [queryRef] = useBackgroundQuery<
+        MaskedVariablesCaseData,
+        VariablesCaseVariables
+      >(maskedQuery, { errorPolicy: "none" });
+      const { data } = useReadQuery(queryRef);
+
+      expectTypeOf(data).toEqualTypeOf<UnmaskedVariablesCaseData>();
+      expectTypeOf(data).not.toEqualTypeOf<MaskedVariablesCaseData>();
+    }
+
+    {
+      const [queryRef] = useBackgroundQuery<
+        Masked<MaskedVariablesCaseData>,
+        VariablesCaseVariables
+      >(maskedQuery, { errorPolicy: "none" });
+      const { data } = useReadQuery(queryRef);
+
+      expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData>();
+      expectTypeOf(data).not.toEqualTypeOf<UnmaskedVariablesCaseData>();
+    }
   });
 
   it("returns DeepPartial<TData> with returnPartialData: true", () => {
@@ -6301,6 +7469,48 @@ describe.skip("type tests", () => {
 
     expectTypeOf(explicit).toEqualTypeOf<DeepPartial<VariablesCaseData>>();
     expectTypeOf(explicit).not.toEqualTypeOf<VariablesCaseData>();
+
+    const { query: maskedQuery } = setupMaskedVariablesCase();
+
+    {
+      const [queryRef] = useBackgroundQuery(maskedQuery, {
+        returnPartialData: true,
+      });
+      const { data } = useReadQuery(queryRef);
+
+      expectTypeOf(data).toEqualTypeOf<DeepPartial<MaskedVariablesCaseData>>();
+      expectTypeOf(data).not.toEqualTypeOf<
+        DeepPartial<UnmaskedVariablesCaseData>
+      >();
+    }
+
+    {
+      const [queryRef] = useBackgroundQuery<
+        MaskedVariablesCaseData,
+        VariablesCaseVariables
+      >(maskedQuery, { returnPartialData: true });
+      const { data } = useReadQuery(queryRef);
+
+      expectTypeOf(data).toEqualTypeOf<
+        DeepPartial<UnmaskedVariablesCaseData>
+      >();
+      expectTypeOf(data).not.toEqualTypeOf<
+        DeepPartial<MaskedVariablesCaseData>
+      >();
+    }
+
+    {
+      const [queryRef] = useBackgroundQuery<
+        Masked<MaskedVariablesCaseData>,
+        VariablesCaseVariables
+      >(maskedQuery, { returnPartialData: true });
+      const { data } = useReadQuery(queryRef);
+
+      expectTypeOf(data).toEqualTypeOf<DeepPartial<MaskedVariablesCaseData>>();
+      expectTypeOf(data).not.toEqualTypeOf<
+        DeepPartial<UnmaskedVariablesCaseData>
+      >();
+    }
   });
 
   it("returns TData with returnPartialData: false", () => {
@@ -6325,6 +7535,40 @@ describe.skip("type tests", () => {
 
     expectTypeOf(explicit).toEqualTypeOf<VariablesCaseData>();
     expectTypeOf(explicit).not.toEqualTypeOf<DeepPartial<VariablesCaseData>>();
+
+    const { query: maskedQuery } = setupMaskedVariablesCase();
+
+    {
+      const [queryRef] = useBackgroundQuery(maskedQuery, {
+        returnPartialData: false,
+      });
+      const { data } = useReadQuery(queryRef);
+
+      expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData>();
+      expectTypeOf(data).not.toEqualTypeOf<UnmaskedVariablesCaseData>();
+    }
+
+    {
+      const [queryRef] = useBackgroundQuery<
+        MaskedVariablesCaseData,
+        VariablesCaseVariables
+      >(maskedQuery, { returnPartialData: false });
+      const { data } = useReadQuery(queryRef);
+
+      expectTypeOf(data).toEqualTypeOf<UnmaskedVariablesCaseData>();
+      expectTypeOf(data).not.toEqualTypeOf<MaskedVariablesCaseData>();
+    }
+
+    {
+      const [queryRef] = useBackgroundQuery<
+        Masked<MaskedVariablesCaseData>,
+        VariablesCaseVariables
+      >(maskedQuery, { returnPartialData: false });
+      const { data } = useReadQuery(queryRef);
+
+      expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData>();
+      expectTypeOf(data).not.toEqualTypeOf<UnmaskedVariablesCaseData>();
+    }
   });
 
   it("returns TData when passing an option that does not affect TData", () => {
@@ -6349,10 +7593,45 @@ describe.skip("type tests", () => {
 
     expectTypeOf(explicit).toEqualTypeOf<VariablesCaseData>();
     expectTypeOf(explicit).not.toEqualTypeOf<DeepPartial<VariablesCaseData>>();
+
+    const { query: maskedQuery } = setupMaskedVariablesCase();
+
+    {
+      const [queryRef] = useBackgroundQuery(maskedQuery, {
+        fetchPolicy: "no-cache",
+      });
+      const { data } = useReadQuery(queryRef);
+
+      expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData>();
+      expectTypeOf(data).not.toEqualTypeOf<UnmaskedVariablesCaseData>();
+    }
+
+    {
+      const [queryRef] = useBackgroundQuery<
+        MaskedVariablesCaseData,
+        VariablesCaseVariables
+      >(maskedQuery, { fetchPolicy: "no-cache" });
+      const { data } = useReadQuery(queryRef);
+
+      expectTypeOf(data).toEqualTypeOf<UnmaskedVariablesCaseData>();
+      expectTypeOf(data).not.toEqualTypeOf<MaskedVariablesCaseData>();
+    }
+
+    {
+      const [queryRef] = useBackgroundQuery<
+        Masked<MaskedVariablesCaseData>,
+        VariablesCaseVariables
+      >(maskedQuery, { fetchPolicy: "no-cache" });
+      const { data } = useReadQuery(queryRef);
+
+      expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData>();
+      expectTypeOf(data).not.toEqualTypeOf<UnmaskedVariablesCaseData>();
+    }
   });
 
   it("handles combinations of options", () => {
     const { query } = setupVariablesCase();
+    const { query: maskedQuery } = setupMaskedVariablesCase();
 
     const [inferredPartialDataIgnoreQueryRef] = useBackgroundQuery(query, {
       returnPartialData: true,
@@ -6388,6 +7667,51 @@ describe.skip("type tests", () => {
       explicitPartialDataIgnore
     ).not.toEqualTypeOf<VariablesCaseData>();
 
+    {
+      const [queryRef] = useBackgroundQuery(maskedQuery, {
+        returnPartialData: true,
+        errorPolicy: "ignore",
+      });
+      const { data } = useReadQuery(queryRef);
+
+      expectTypeOf(data).toEqualTypeOf<
+        DeepPartial<MaskedVariablesCaseData> | undefined
+      >();
+      expectTypeOf(data).not.toEqualTypeOf<
+        DeepPartial<UnmaskedVariablesCaseData> | undefined
+      >();
+    }
+
+    {
+      const [queryRef] = useBackgroundQuery<
+        MaskedVariablesCaseData,
+        VariablesCaseVariables
+      >(maskedQuery, { returnPartialData: true, errorPolicy: "ignore" });
+      const { data } = useReadQuery(queryRef);
+
+      expectTypeOf(data).toEqualTypeOf<
+        DeepPartial<UnmaskedVariablesCaseData> | undefined
+      >();
+      expectTypeOf(data).not.toEqualTypeOf<
+        DeepPartial<MaskedVariablesCaseData> | undefined
+      >();
+    }
+
+    {
+      const [queryRef] = useBackgroundQuery<
+        Masked<MaskedVariablesCaseData>,
+        VariablesCaseVariables
+      >(maskedQuery, { returnPartialData: true, errorPolicy: "ignore" });
+      const { data } = useReadQuery(queryRef);
+
+      expectTypeOf(data).toEqualTypeOf<
+        DeepPartial<MaskedVariablesCaseData> | undefined
+      >();
+      expectTypeOf(data).not.toEqualTypeOf<
+        DeepPartial<UnmaskedVariablesCaseData> | undefined
+      >();
+    }
+
     const [inferredPartialDataNoneQueryRef] = useBackgroundQuery(query, {
       returnPartialData: true,
       errorPolicy: "none",
@@ -6422,6 +7746,47 @@ describe.skip("type tests", () => {
     expectTypeOf(
       explicitPartialDataNone
     ).not.toEqualTypeOf<VariablesCaseData>();
+
+    {
+      const [queryRef] = useBackgroundQuery(maskedQuery, {
+        returnPartialData: true,
+        errorPolicy: "none",
+      });
+      const { data } = useReadQuery(queryRef);
+
+      expectTypeOf(data).toEqualTypeOf<DeepPartial<MaskedVariablesCaseData>>();
+      expectTypeOf(data).not.toEqualTypeOf<
+        DeepPartial<UnmaskedVariablesCaseData>
+      >();
+    }
+
+    {
+      const [queryRef] = useBackgroundQuery<
+        MaskedVariablesCaseData,
+        VariablesCaseVariables
+      >(maskedQuery, { returnPartialData: true, errorPolicy: "none" });
+      const { data } = useReadQuery(queryRef);
+
+      expectTypeOf(data).toEqualTypeOf<
+        DeepPartial<UnmaskedVariablesCaseData>
+      >();
+      expectTypeOf(data).not.toEqualTypeOf<
+        DeepPartial<MaskedVariablesCaseData>
+      >();
+    }
+
+    {
+      const [queryRef] = useBackgroundQuery<
+        Masked<MaskedVariablesCaseData>,
+        VariablesCaseVariables
+      >(maskedQuery, { returnPartialData: true, errorPolicy: "none" });
+      const { data } = useReadQuery(queryRef);
+
+      expectTypeOf(data).toEqualTypeOf<DeepPartial<MaskedVariablesCaseData>>();
+      expectTypeOf(data).not.toEqualTypeOf<
+        DeepPartial<UnmaskedVariablesCaseData>
+      >();
+    }
   });
 
   it("returns correct TData type when combined options that do not affect TData", () => {
@@ -6450,10 +7815,63 @@ describe.skip("type tests", () => {
 
     expectTypeOf(explicit).toEqualTypeOf<DeepPartial<VariablesCaseData>>();
     expectTypeOf(explicit).not.toEqualTypeOf<VariablesCaseData>();
+
+    const { query: maskedQuery } = setupMaskedVariablesCase();
+
+    {
+      const [queryRef] = useBackgroundQuery(maskedQuery, {
+        fetchPolicy: "no-cache",
+        returnPartialData: true,
+        errorPolicy: "none",
+      });
+      const { data } = useReadQuery(queryRef);
+
+      expectTypeOf(data).toEqualTypeOf<DeepPartial<MaskedVariablesCaseData>>();
+      expectTypeOf(data).not.toEqualTypeOf<
+        DeepPartial<UnmaskedVariablesCaseData>
+      >();
+    }
+
+    {
+      const [queryRef] = useBackgroundQuery<
+        MaskedVariablesCaseData,
+        VariablesCaseVariables
+      >(maskedQuery, {
+        fetchPolicy: "no-cache",
+        returnPartialData: true,
+        errorPolicy: "none",
+      });
+      const { data } = useReadQuery(queryRef);
+
+      expectTypeOf(data).toEqualTypeOf<
+        DeepPartial<UnmaskedVariablesCaseData>
+      >();
+      expectTypeOf(data).not.toEqualTypeOf<
+        DeepPartial<MaskedVariablesCaseData>
+      >();
+    }
+
+    {
+      const [queryRef] = useBackgroundQuery<
+        Masked<MaskedVariablesCaseData>,
+        VariablesCaseVariables
+      >(maskedQuery, {
+        fetchPolicy: "no-cache",
+        returnPartialData: true,
+        errorPolicy: "none",
+      });
+      const { data } = useReadQuery(queryRef);
+
+      expectTypeOf(data).toEqualTypeOf<DeepPartial<MaskedVariablesCaseData>>();
+      expectTypeOf(data).not.toEqualTypeOf<
+        DeepPartial<UnmaskedVariablesCaseData>
+      >();
+    }
   });
 
   it("returns QueryRef<TData> | undefined when `skip` is present", () => {
     const { query } = setupVariablesCase();
+    const { query: maskedQuery } = setupMaskedVariablesCase();
 
     const [inferredQueryRef] = useBackgroundQuery(query, {
       skip: true,
@@ -6484,6 +7902,48 @@ describe.skip("type tests", () => {
       QueryRef<VariablesCaseData, VariablesCaseVariables>
     >();
 
+    {
+      const [queryRef] = useBackgroundQuery(maskedQuery, { skip: true });
+
+      expectTypeOf(queryRef).toEqualTypeOf<
+        | QueryRef<Masked<MaskedVariablesCaseData>, VariablesCaseVariables>
+        | undefined
+      >();
+      expectTypeOf(queryRef).not.toEqualTypeOf<
+        QueryRef<MaskedVariablesCaseData, VariablesCaseVariables> | undefined
+      >();
+    }
+
+    {
+      const [queryRef] = useBackgroundQuery<
+        MaskedVariablesCaseData,
+        VariablesCaseVariables
+      >(maskedQuery, { skip: true });
+
+      expectTypeOf(queryRef).toEqualTypeOf<
+        QueryRef<MaskedVariablesCaseData, VariablesCaseVariables> | undefined
+      >();
+      expectTypeOf(queryRef).not.toEqualTypeOf<
+        | QueryRef<Masked<MaskedVariablesCaseData>, VariablesCaseVariables>
+        | undefined
+      >();
+    }
+
+    {
+      const [queryRef] = useBackgroundQuery<
+        Masked<MaskedVariablesCaseData>,
+        VariablesCaseVariables
+      >(maskedQuery, { skip: true });
+
+      expectTypeOf(queryRef).toEqualTypeOf<
+        | QueryRef<Masked<MaskedVariablesCaseData>, VariablesCaseVariables>
+        | undefined
+      >();
+      expectTypeOf(queryRef).not.toEqualTypeOf<
+        QueryRef<MaskedVariablesCaseData, VariablesCaseVariables> | undefined
+      >();
+    }
+
     // TypeScript is too smart and using a `const` or `let` boolean variable
     // for the `skip` option results in a false positive. Using an options
     // object allows us to properly check for a dynamic case.
@@ -6504,6 +7964,50 @@ describe.skip("type tests", () => {
     expectTypeOf(dynamicQueryRef).not.toEqualTypeOf<
       QueryRef<VariablesCaseData, VariablesCaseVariables>
     >();
+
+    {
+      const [queryRef] = useBackgroundQuery(maskedQuery, {
+        skip: options.skip,
+      });
+
+      expectTypeOf(queryRef).toEqualTypeOf<
+        | QueryRef<Masked<MaskedVariablesCaseData>, VariablesCaseVariables>
+        | undefined
+      >();
+      expectTypeOf(queryRef).not.toEqualTypeOf<
+        QueryRef<UnmaskedVariablesCaseData, VariablesCaseVariables> | undefined
+      >();
+    }
+
+    {
+      const [queryRef] = useBackgroundQuery<
+        MaskedVariablesCaseData,
+        VariablesCaseVariables
+      >(maskedQuery, { skip: options.skip });
+
+      expectTypeOf(queryRef).toEqualTypeOf<
+        QueryRef<MaskedVariablesCaseData, VariablesCaseVariables> | undefined
+      >();
+      expectTypeOf(queryRef).not.toEqualTypeOf<
+        | QueryRef<Masked<MaskedVariablesCaseData>, VariablesCaseVariables>
+        | undefined
+      >();
+    }
+
+    {
+      const [queryRef] = useBackgroundQuery<
+        Masked<MaskedVariablesCaseData>,
+        VariablesCaseVariables
+      >(maskedQuery, { skip: options.skip });
+
+      expectTypeOf(queryRef).toEqualTypeOf<
+        | QueryRef<Masked<MaskedVariablesCaseData>, VariablesCaseVariables>
+        | undefined
+      >();
+      expectTypeOf(queryRef).not.toEqualTypeOf<
+        QueryRef<MaskedVariablesCaseData, VariablesCaseVariables> | undefined
+      >();
+    }
   });
 
   it("returns `undefined` when using `skipToken` unconditionally", () => {
@@ -6525,6 +8029,43 @@ describe.skip("type tests", () => {
     expectTypeOf(explicitQueryRef).not.toEqualTypeOf<
       QueryRef<VariablesCaseData, VariablesCaseVariables> | undefined
     >();
+
+    const { query: maskedQuery } = setupMaskedVariablesCase();
+
+    {
+      const [queryRef] = useBackgroundQuery(maskedQuery, skipToken);
+
+      expectTypeOf(queryRef).toEqualTypeOf<undefined>();
+      expectTypeOf(queryRef).not.toEqualTypeOf<
+        | QueryRef<Masked<MaskedVariablesCaseData>, VariablesCaseVariables>
+        | undefined
+      >();
+    }
+
+    {
+      const [queryRef] = useBackgroundQuery<
+        MaskedVariablesCaseData,
+        VariablesCaseVariables
+      >(maskedQuery, skipToken);
+
+      expectTypeOf(queryRef).toEqualTypeOf<undefined>();
+      expectTypeOf(queryRef).not.toEqualTypeOf<
+        QueryRef<MaskedVariablesCaseData, VariablesCaseVariables> | undefined
+      >();
+    }
+
+    {
+      const [queryRef] = useBackgroundQuery<
+        Masked<MaskedVariablesCaseData>,
+        VariablesCaseVariables
+      >(maskedQuery, skipToken);
+
+      expectTypeOf(queryRef).toEqualTypeOf<undefined>();
+      expectTypeOf(queryRef).not.toEqualTypeOf<
+        | QueryRef<Masked<MaskedVariablesCaseData>, VariablesCaseVariables>
+        | undefined
+      >();
+    }
   });
 
   it("returns QueryRef<TData> | undefined when using conditional `skipToken`", () => {
@@ -6562,6 +8103,53 @@ describe.skip("type tests", () => {
     expectTypeOf(explicitQueryRef).not.toEqualTypeOf<
       QueryRef<VariablesCaseData, VariablesCaseVariables>
     >();
+
+    const { query: maskedQuery } = setupMaskedVariablesCase();
+
+    {
+      const [queryRef] = useBackgroundQuery(
+        maskedQuery,
+        options.skip ? skipToken : undefined
+      );
+
+      expectTypeOf(queryRef).toEqualTypeOf<
+        | QueryRef<Masked<MaskedVariablesCaseData>, VariablesCaseVariables>
+        | undefined
+      >();
+      expectTypeOf(queryRef).not.toEqualTypeOf<
+        QueryRef<MaskedVariablesCaseData, VariablesCaseVariables> | undefined
+      >();
+    }
+
+    {
+      const [queryRef] = useBackgroundQuery<
+        MaskedVariablesCaseData,
+        VariablesCaseVariables
+      >(maskedQuery, options.skip ? skipToken : undefined);
+
+      expectTypeOf(queryRef).toEqualTypeOf<
+        QueryRef<MaskedVariablesCaseData, VariablesCaseVariables> | undefined
+      >();
+      expectTypeOf(queryRef).not.toEqualTypeOf<
+        | QueryRef<Masked<MaskedVariablesCaseData>, VariablesCaseVariables>
+        | undefined
+      >();
+    }
+
+    {
+      const [queryRef] = useBackgroundQuery<
+        Masked<MaskedVariablesCaseData>,
+        VariablesCaseVariables
+      >(maskedQuery, options.skip ? skipToken : undefined);
+
+      expectTypeOf(queryRef).toEqualTypeOf<
+        | QueryRef<Masked<MaskedVariablesCaseData>, VariablesCaseVariables>
+        | undefined
+      >();
+      expectTypeOf(queryRef).not.toEqualTypeOf<
+        QueryRef<MaskedVariablesCaseData, VariablesCaseVariables> | undefined
+      >();
+    }
   });
 
   it("returns QueryRef<DeepPartial<TData>> | undefined when using `skipToken` with `returnPartialData`", () => {
@@ -6603,5 +8191,224 @@ describe.skip("type tests", () => {
     expectTypeOf(explicitQueryRef).not.toEqualTypeOf<
       QueryRef<VariablesCaseData, VariablesCaseVariables>
     >();
+
+    const { query: maskedQuery } = setupMaskedVariablesCase();
+
+    {
+      const [queryRef] = useBackgroundQuery(
+        maskedQuery,
+        options.skip ? skipToken : { returnPartialData: true }
+      );
+
+      expectTypeOf(queryRef).toEqualTypeOf<
+        | QueryRef<
+            DeepPartial<Masked<MaskedVariablesCaseData>>,
+            VariablesCaseVariables
+          >
+        | undefined
+      >();
+      expectTypeOf(queryRef).not.toEqualTypeOf<
+        | QueryRef<DeepPartial<MaskedVariablesCaseData>, VariablesCaseVariables>
+        | undefined
+      >();
+    }
+
+    {
+      const [queryRef] = useBackgroundQuery<
+        MaskedVariablesCaseData,
+        VariablesCaseVariables
+      >(maskedQuery, options.skip ? skipToken : { returnPartialData: true });
+
+      expectTypeOf(queryRef).toEqualTypeOf<
+        | QueryRef<DeepPartial<MaskedVariablesCaseData>, VariablesCaseVariables>
+        | undefined
+      >();
+      expectTypeOf(queryRef).not.toEqualTypeOf<
+        | QueryRef<
+            DeepPartial<Masked<MaskedVariablesCaseData>>,
+            VariablesCaseVariables
+          >
+        | undefined
+      >();
+    }
+
+    {
+      const [queryRef] = useBackgroundQuery<
+        Masked<MaskedVariablesCaseData>,
+        VariablesCaseVariables
+      >(maskedQuery, options.skip ? skipToken : { returnPartialData: true });
+
+      expectTypeOf(queryRef).toEqualTypeOf<
+        | QueryRef<
+            DeepPartial<Masked<MaskedVariablesCaseData>>,
+            VariablesCaseVariables
+          >
+        | undefined
+      >();
+      expectTypeOf(queryRef).not.toEqualTypeOf<
+        | QueryRef<DeepPartial<MaskedVariablesCaseData>, VariablesCaseVariables>
+        | undefined
+      >();
+    }
+  });
+
+  it("uses proper masked types for refetch", async () => {
+    const { query, unmaskedQuery } = setupMaskedVariablesCase();
+
+    {
+      const [, { refetch }] = useBackgroundQuery(query);
+
+      const result = await refetch();
+
+      expectTypeOf(result.data).toEqualTypeOf<MaskedVariablesCaseData>();
+      expectTypeOf(result.data).not.toEqualTypeOf<UnmaskedVariablesCaseData>();
+    }
+
+    {
+      const [, { refetch }] = useBackgroundQuery(unmaskedQuery);
+
+      const result = await refetch();
+
+      expectTypeOf(result.data).toEqualTypeOf<UnmaskedVariablesCaseData>();
+      expectTypeOf(result.data).not.toEqualTypeOf<MaskedVariablesCaseData>();
+    }
+  });
+
+  it("uses proper masked types for fetchMore", async () => {
+    const { query, unmaskedQuery } = setupMaskedVariablesCase();
+
+    {
+      const [, { fetchMore }] = useBackgroundQuery(query);
+
+      const result = await fetchMore({
+        updateQuery: (queryData, { fetchMoreResult }) => {
+          expectTypeOf(queryData).toEqualTypeOf<UnmaskedVariablesCaseData>();
+          expectTypeOf(queryData).not.toEqualTypeOf<MaskedVariablesCaseData>();
+
+          expectTypeOf(
+            fetchMoreResult
+          ).toEqualTypeOf<UnmaskedVariablesCaseData>();
+          expectTypeOf(
+            fetchMoreResult
+          ).not.toEqualTypeOf<MaskedVariablesCaseData>();
+
+          return {} as UnmaskedVariablesCaseData;
+        },
+      });
+
+      expectTypeOf(result.data).toEqualTypeOf<MaskedVariablesCaseData>();
+      expectTypeOf(result.data).not.toEqualTypeOf<UnmaskedVariablesCaseData>();
+    }
+
+    {
+      const [, { fetchMore }] = useBackgroundQuery(unmaskedQuery);
+
+      const result = await fetchMore({
+        updateQuery: (queryData, { fetchMoreResult }) => {
+          expectTypeOf(queryData).toEqualTypeOf<UnmaskedVariablesCaseData>();
+          expectTypeOf(queryData).not.toEqualTypeOf<MaskedVariablesCaseData>();
+
+          expectTypeOf(
+            fetchMoreResult
+          ).toEqualTypeOf<UnmaskedVariablesCaseData>();
+          expectTypeOf(
+            fetchMoreResult
+          ).not.toEqualTypeOf<MaskedVariablesCaseData>();
+
+          return {} as UnmaskedVariablesCaseData;
+        },
+      });
+
+      expectTypeOf(result.data).toEqualTypeOf<UnmaskedVariablesCaseData>();
+      expectTypeOf(result.data).not.toEqualTypeOf<MaskedVariablesCaseData>();
+    }
+  });
+
+  it("uses proper masked types for subscribeToMore", async () => {
+    type CharacterFragment = {
+      __typename: "Character";
+      name: string;
+    } & { " $fragmentName": "CharacterFragment" };
+
+    type Subscription = {
+      pushLetter: {
+        __typename: "Character";
+        id: number;
+      } & { " $fragmentRefs": { CharacterFragment: CharacterFragment } };
+    };
+
+    type UnmaskedSubscription = {
+      pushLetter: {
+        __typename: "Character";
+        id: number;
+        name: string;
+      };
+    };
+
+    const { query, unmaskedQuery } = setupMaskedVariablesCase();
+
+    {
+      const [, { subscribeToMore }] = useBackgroundQuery(query);
+
+      const subscription: MaskedDocumentNode<Subscription, never> = gql`
+        subscription {
+          pushLetter {
+            id
+            ...CharacterFragment
+          }
+        }
+
+        fragment CharacterFragment on Character {
+          name
+        }
+      `;
+
+      subscribeToMore({
+        document: subscription,
+        updateQuery: (queryData, { subscriptionData }) => {
+          expectTypeOf(queryData).toEqualTypeOf<UnmaskedVariablesCaseData>();
+          expectTypeOf(queryData).not.toEqualTypeOf<MaskedVariablesCaseData>();
+
+          expectTypeOf(
+            subscriptionData.data
+          ).toEqualTypeOf<UnmaskedSubscription>();
+          expectTypeOf(subscriptionData.data).not.toEqualTypeOf<Subscription>();
+
+          return {} as UnmaskedVariablesCaseData;
+        },
+      });
+    }
+
+    {
+      const [, { subscribeToMore }] = useBackgroundQuery(unmaskedQuery);
+
+      const subscription: TypedDocumentNode<Subscription, never> = gql`
+        subscription {
+          pushLetter {
+            id
+            ...CharacterFragment
+          }
+        }
+
+        fragment CharacterFragment on Character {
+          name
+        }
+      `;
+
+      subscribeToMore({
+        document: subscription,
+        updateQuery: (queryData, { subscriptionData }) => {
+          expectTypeOf(queryData).toEqualTypeOf<UnmaskedVariablesCaseData>();
+          expectTypeOf(queryData).not.toEqualTypeOf<MaskedVariablesCaseData>();
+
+          expectTypeOf(
+            subscriptionData.data
+          ).toEqualTypeOf<UnmaskedSubscription>();
+          expectTypeOf(subscriptionData.data).not.toEqualTypeOf<Subscription>();
+
+          return {} as UnmaskedVariablesCaseData;
+        },
+      });
+    }
   });
 });

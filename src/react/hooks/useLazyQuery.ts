@@ -82,11 +82,12 @@ export function useLazyQuery<
   options?: LazyQueryHookOptions<NoInfer<TData>, NoInfer<TVariables>>
 ): LazyQueryResultTuple<TData, TVariables> {
   const execOptionsRef =
-    React.useRef<Partial<LazyQueryHookExecOptions<TData, TVariables>>>();
-  const optionsRef = React.useRef<LazyQueryHookOptions<TData, TVariables>>();
+    React.useRef<Partial<LazyQueryHookExecOptions<TData, TVariables>>>(void 0);
+  const optionsRef =
+    React.useRef<LazyQueryHookOptions<TData, TVariables>>(void 0);
   const queryRef = React.useRef<
     DocumentNode | TypedDocumentNode<TData, TVariables>
-  >();
+  >(void 0);
   const merged = mergeOptions(options, execOptionsRef.current || {});
   const document = merged?.query ?? query;
 
@@ -248,7 +249,12 @@ function executeQuery<TData, TVariables extends OperationVariables>(
       },
       complete: () => {
         resolve(
-          toQueryResult(result, resultData.previousData, observable, client)
+          toQueryResult(
+            observable["maskResult"](result),
+            resultData.previousData,
+            observable,
+            client
+          )
         );
       },
     });

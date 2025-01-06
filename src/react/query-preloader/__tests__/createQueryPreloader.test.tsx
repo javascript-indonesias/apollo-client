@@ -26,15 +26,22 @@ import {
   setupSimpleCase,
   setupVariablesCase,
   VariablesCaseData,
+  renderHookAsync,
 } from "../../../testing/internal";
 import { ApolloProvider } from "../../context";
-import { act, renderHook, screen } from "@testing-library/react";
+import { act, screen } from "@testing-library/react";
 import { UseReadQueryResult, useReadQuery } from "../../hooks";
 import { GraphQLError } from "graphql";
 import { ErrorBoundary } from "react-error-boundary";
 import userEvent from "@testing-library/user-event";
 import {
+  MaskedVariablesCaseData,
+  setupMaskedVariablesCase,
+} from "../../../testing/internal/scenarios";
+import { Masked } from "../../../masking";
+import {
   createRenderStream,
+  disableActEnvironment,
   useTrackRenders,
 } from "@testing-library/react-render-stream";
 
@@ -45,7 +52,7 @@ function createDefaultClient(mocks: MockedResponse[]) {
   });
 }
 
-function renderDefaultTestApp<TData>({
+async function renderDefaultTestApp<TData>({
   client,
   queryRef,
 }: {
@@ -90,7 +97,7 @@ function renderDefaultTestApp<TData>({
     );
   }
 
-  const utils = renderStream.render(<App />, {
+  const utils = await renderStream.render(<App />, {
     wrapper: ({ children }) => (
       <ApolloProvider client={client}>{children}</ApolloProvider>
     ),
@@ -110,7 +117,8 @@ test("loads a query and suspends when passed to useReadQuery", async () => {
 
   const queryRef = preloadQuery(query);
 
-  const { renderStream } = renderDefaultTestApp({ client, queryRef });
+  using _disabledAct = disableActEnvironment();
+  const { renderStream } = await renderDefaultTestApp({ client, queryRef });
 
   {
     const { renderedComponents } = await renderStream.takeRender();
@@ -138,7 +146,8 @@ test("loads a query with variables and suspends when passed to useReadQuery", as
     variables: { id: "1" },
   });
 
-  const { renderStream } = renderDefaultTestApp({ client, queryRef });
+  using _disabledAct = disableActEnvironment();
+  const { renderStream } = await renderDefaultTestApp({ client, queryRef });
 
   {
     const { renderedComponents } = await renderStream.takeRender();
@@ -221,7 +230,7 @@ test("useReadQuery auto-retains the queryRef and disposes of it when unmounted",
 
   const queryRef = preloadQuery(query);
 
-  const { unmount } = renderHook(() => useReadQuery(queryRef));
+  const { unmount } = await renderHookAsync(() => useReadQuery(queryRef));
 
   // We don't start the dispose timer until the promise is initially resolved
   // so we need to wait for it
@@ -256,6 +265,7 @@ test("useReadQuery auto-resubscribes the query after its disposed", async () => 
     });
   });
 
+  using _disabledAct = disableActEnvironment();
   const renderStream = createRenderStream({
     initialSnapshot: {
       result: null as UseReadQueryResult<SimpleCaseData> | null,
@@ -293,7 +303,7 @@ test("useReadQuery auto-resubscribes the query after its disposed", async () => 
     return null;
   }
 
-  renderStream.render(<App />, { wrapper: createClientWrapper(client) });
+  await renderStream.render(<App />, { wrapper: createClientWrapper(client) });
 
   const toggleButton = screen.getByText("Toggle");
 
@@ -313,14 +323,14 @@ test("useReadQuery auto-resubscribes the query after its disposed", async () => 
   expect(fetchCount).toBe(1);
 
   // unmount ReadQueryHook
-  await act(() => user.click(toggleButton));
+  await user.click(toggleButton);
   await wait(0);
   await renderStream.takeRender();
 
   expect(queryRef).toBeDisposed();
 
   // mount ReadQueryHook
-  await act(() => user.click(toggleButton));
+  await user.click(toggleButton);
 
   // Ensure we aren't refetching the data by checking we still render the same
   // cache result
@@ -352,7 +362,7 @@ test("useReadQuery auto-resubscribes the query after its disposed", async () => 
   }
 
   // unmount ReadQueryHook
-  await act(() => user.click(toggleButton));
+  await user.click(toggleButton);
   await renderStream.takeRender();
   await wait(0);
 
@@ -362,7 +372,7 @@ test("useReadQuery auto-resubscribes the query after its disposed", async () => 
   // instead of the old one
   client.writeQuery({ query, data: { greeting: "While you were away" } });
   // mount ReadQueryHook
-  await act(() => user.click(toggleButton));
+  await user.click(toggleButton);
 
   expect(queryRef).not.toBeDisposed();
 
@@ -381,7 +391,7 @@ test("useReadQuery auto-resubscribes the query after its disposed", async () => 
   expect(fetchCount).toBe(1);
 
   // unmount ReadQueryHook
-  await act(() => user.click(toggleButton));
+  await user.click(toggleButton);
   await renderStream.takeRender();
   await wait(0);
 
@@ -400,7 +410,7 @@ test("useReadQuery auto-resubscribes the query after its disposed", async () => 
   expect(fetchCount).toBe(1);
 
   // mount ReadQueryHook
-  await act(() => user.click(toggleButton));
+  await user.click(toggleButton);
 
   // this should now trigger a network request
   expect(fetchCount).toBe(2);
@@ -449,6 +459,7 @@ test("useReadQuery handles auto-resubscribe with returnPartialData", async () =>
     });
   });
 
+  using _disabledAct = disableActEnvironment();
   const renderStream = createRenderStream({
     initialSnapshot: {
       result: null as UseReadQueryResult<DeepPartial<VariablesCaseData>> | null,
@@ -489,7 +500,7 @@ test("useReadQuery handles auto-resubscribe with returnPartialData", async () =>
     return null;
   }
 
-  renderStream.render(<App />, { wrapper: createClientWrapper(client) });
+  await renderStream.render(<App />, { wrapper: createClientWrapper(client) });
 
   const toggleButton = screen.getByText("Toggle");
 
@@ -511,14 +522,14 @@ test("useReadQuery handles auto-resubscribe with returnPartialData", async () =>
   expect(fetchCount).toBe(1);
 
   // unmount ReadQueryHook
-  await act(() => user.click(toggleButton));
+  await user.click(toggleButton);
   await wait(0);
   await renderStream.takeRender();
 
   expect(queryRef).toBeDisposed();
 
   // mount ReadQueryHook
-  await act(() => user.click(toggleButton));
+  await user.click(toggleButton);
 
   // Ensure we aren't refetching the data by checking we still render the same
   // cache result
@@ -568,7 +579,7 @@ test("useReadQuery handles auto-resubscribe with returnPartialData", async () =>
   }
 
   // unmount ReadQueryHook
-  await act(() => user.click(toggleButton));
+  await user.click(toggleButton);
   await renderStream.takeRender();
   await wait(0);
 
@@ -588,7 +599,7 @@ test("useReadQuery handles auto-resubscribe with returnPartialData", async () =>
     variables: { id: "1" },
   });
   // mount ReadQueryHook
-  await act(() => user.click(toggleButton));
+  await user.click(toggleButton);
 
   expect(queryRef).not.toBeDisposed();
 
@@ -613,7 +624,7 @@ test("useReadQuery handles auto-resubscribe with returnPartialData", async () =>
   expect(fetchCount).toBe(1);
 
   // unmount ReadQueryHook
-  await act(() => user.click(toggleButton));
+  await user.click(toggleButton);
   await renderStream.takeRender();
   await wait(0);
 
@@ -633,7 +644,7 @@ test("useReadQuery handles auto-resubscribe with returnPartialData", async () =>
   expect(fetchCount).toBe(1);
 
   // mount ReadQueryHook
-  await act(() => user.click(toggleButton));
+  await user.click(toggleButton);
 
   // this should now trigger a network request
   expect(fetchCount).toBe(2);
@@ -663,7 +674,7 @@ test("useReadQuery handles auto-resubscribe with returnPartialData", async () =>
   }
 
   // unmount ReadQueryHook
-  await act(() => user.click(toggleButton));
+  await user.click(toggleButton);
   await renderStream.takeRender();
   await wait(0);
 
@@ -671,7 +682,7 @@ test("useReadQuery handles auto-resubscribe with returnPartialData", async () =>
   client.clearStore();
 
   // mount ReadQueryHook
-  await act(() => user.click(toggleButton));
+  await user.click(toggleButton);
 
   expect(fetchCount).toBe(3);
 
@@ -710,6 +721,7 @@ test("useReadQuery handles auto-resubscribe on network-only fetch policy", async
     });
   });
 
+  using _disabledAct = disableActEnvironment();
   const renderStream = createRenderStream({
     initialSnapshot: {
       result: null as UseReadQueryResult<SimpleCaseData> | null,
@@ -747,7 +759,7 @@ test("useReadQuery handles auto-resubscribe on network-only fetch policy", async
     return null;
   }
 
-  renderStream.render(<App />, { wrapper: createClientWrapper(client) });
+  await renderStream.render(<App />, { wrapper: createClientWrapper(client) });
 
   const toggleButton = screen.getByText("Toggle");
 
@@ -767,14 +779,14 @@ test("useReadQuery handles auto-resubscribe on network-only fetch policy", async
   expect(fetchCount).toBe(1);
 
   // unmount ReadQueryHook
-  await act(() => user.click(toggleButton));
+  await user.click(toggleButton);
   await wait(0);
   await renderStream.takeRender();
 
   expect(queryRef).toBeDisposed();
 
   // mount ReadQueryHook
-  await act(() => user.click(toggleButton));
+  await user.click(toggleButton);
 
   // Ensure we aren't refetching the data by checking we still render the same
   // cache result
@@ -806,7 +818,7 @@ test("useReadQuery handles auto-resubscribe on network-only fetch policy", async
   }
 
   // unmount ReadQueryHook
-  await act(() => user.click(toggleButton));
+  await user.click(toggleButton);
   await renderStream.takeRender();
   await wait(0);
 
@@ -816,7 +828,7 @@ test("useReadQuery handles auto-resubscribe on network-only fetch policy", async
   // instead of the old one
   client.writeQuery({ query, data: { greeting: "While you were away" } });
   // mount ReadQueryHook
-  await act(() => user.click(toggleButton));
+  await user.click(toggleButton);
 
   expect(queryRef).not.toBeDisposed();
 
@@ -835,7 +847,7 @@ test("useReadQuery handles auto-resubscribe on network-only fetch policy", async
   expect(fetchCount).toBe(1);
 
   // unmount ReadQueryHook
-  await act(() => user.click(toggleButton));
+  await user.click(toggleButton);
   await renderStream.takeRender();
   await wait(0);
 
@@ -853,7 +865,7 @@ test("useReadQuery handles auto-resubscribe on network-only fetch policy", async
   expect(fetchCount).toBe(1);
 
   // mount ReadQueryHook
-  await act(() => user.click(toggleButton));
+  await user.click(toggleButton);
 
   expect(fetchCount).toBe(2);
   expect(queryRef).not.toBeDisposed();
@@ -891,6 +903,7 @@ test("useReadQuery handles auto-resubscribe on cache-and-network fetch policy", 
     });
   });
 
+  using _disabledAct = disableActEnvironment();
   const renderStream = createRenderStream({
     initialSnapshot: {
       result: null as UseReadQueryResult<SimpleCaseData> | null,
@@ -928,7 +941,7 @@ test("useReadQuery handles auto-resubscribe on cache-and-network fetch policy", 
     return null;
   }
 
-  renderStream.render(<App />, { wrapper: createClientWrapper(client) });
+  await renderStream.render(<App />, { wrapper: createClientWrapper(client) });
 
   const toggleButton = screen.getByText("Toggle");
 
@@ -948,14 +961,14 @@ test("useReadQuery handles auto-resubscribe on cache-and-network fetch policy", 
   expect(fetchCount).toBe(1);
 
   // unmount ReadQueryHook
-  await act(() => user.click(toggleButton));
+  await user.click(toggleButton);
   await wait(0);
   await renderStream.takeRender();
 
   expect(queryRef).toBeDisposed();
 
   // mount ReadQueryHook
-  await act(() => user.click(toggleButton));
+  await user.click(toggleButton);
 
   // Ensure we aren't refetching the data by checking we still render the same
   // cache result
@@ -987,7 +1000,7 @@ test("useReadQuery handles auto-resubscribe on cache-and-network fetch policy", 
   }
 
   // unmount ReadQueryHook
-  await act(() => user.click(toggleButton));
+  await user.click(toggleButton);
   await renderStream.takeRender();
   await wait(0);
 
@@ -997,7 +1010,7 @@ test("useReadQuery handles auto-resubscribe on cache-and-network fetch policy", 
   // instead of the old one
   client.writeQuery({ query, data: { greeting: "While you were away" } });
   // mount ReadQueryHook
-  await act(() => user.click(toggleButton));
+  await user.click(toggleButton);
 
   expect(queryRef).not.toBeDisposed();
 
@@ -1016,7 +1029,7 @@ test("useReadQuery handles auto-resubscribe on cache-and-network fetch policy", 
   expect(fetchCount).toBe(1);
 
   // unmount ReadQueryHook
-  await act(() => user.click(toggleButton));
+  await user.click(toggleButton);
   await renderStream.takeRender();
   await wait(0);
 
@@ -1034,7 +1047,7 @@ test("useReadQuery handles auto-resubscribe on cache-and-network fetch policy", 
   expect(fetchCount).toBe(1);
 
   // mount ReadQueryHook
-  await act(() => user.click(toggleButton));
+  await user.click(toggleButton);
 
   expect(fetchCount).toBe(2);
   expect(queryRef).not.toBeDisposed();
@@ -1072,6 +1085,7 @@ test("useReadQuery handles auto-resubscribe on no-cache fetch policy", async () 
     });
   });
 
+  using _disabledAct = disableActEnvironment();
   const renderStream = createRenderStream({
     initialSnapshot: {
       result: null as UseReadQueryResult<SimpleCaseData> | null,
@@ -1109,7 +1123,7 @@ test("useReadQuery handles auto-resubscribe on no-cache fetch policy", async () 
     return null;
   }
 
-  renderStream.render(<App />, { wrapper: createClientWrapper(client) });
+  await renderStream.render(<App />, { wrapper: createClientWrapper(client) });
 
   const toggleButton = screen.getByText("Toggle");
 
@@ -1129,14 +1143,14 @@ test("useReadQuery handles auto-resubscribe on no-cache fetch policy", async () 
   expect(fetchCount).toBe(1);
 
   // unmount ReadQueryHook
-  await act(() => user.click(toggleButton));
+  await user.click(toggleButton);
   await wait(0);
   await renderStream.takeRender();
 
   expect(queryRef).toBeDisposed();
 
   // mount ReadQueryHook
-  await act(() => user.click(toggleButton));
+  await user.click(toggleButton);
 
   // Ensure we aren't refetching the data by checking we still render the same
   // result
@@ -1160,7 +1174,7 @@ test("useReadQuery handles auto-resubscribe on no-cache fetch policy", async () 
   await expect(renderStream).not.toRerender();
 
   // unmount ReadQueryHook
-  await act(() => user.click(toggleButton));
+  await user.click(toggleButton);
   await renderStream.takeRender();
   await wait(0);
 
@@ -1169,7 +1183,7 @@ test("useReadQuery handles auto-resubscribe on no-cache fetch policy", async () 
   // Write a cache result to ensure that remounting will ignore this result
   client.writeQuery({ query, data: { greeting: "While you were away" } });
   // mount ReadQueryHook
-  await act(() => user.click(toggleButton));
+  await user.click(toggleButton);
 
   expect(queryRef).not.toBeDisposed();
 
@@ -1187,7 +1201,7 @@ test("useReadQuery handles auto-resubscribe on no-cache fetch policy", async () 
   expect(fetchCount).toBe(1);
 
   // unmount ReadQueryHook
-  await act(() => user.click(toggleButton));
+  await user.click(toggleButton);
   await renderStream.takeRender();
   await wait(0);
 
@@ -1205,7 +1219,7 @@ test("useReadQuery handles auto-resubscribe on no-cache fetch policy", async () 
   expect(fetchCount).toBe(1);
 
   // mount ReadQueryHook
-  await act(() => user.click(toggleButton));
+  await user.click(toggleButton);
 
   expect(fetchCount).toBe(1);
   expect(queryRef).not.toBeDisposed();
@@ -1233,7 +1247,8 @@ test("reacts to cache updates", async () => {
   const preloadQuery = createQueryPreloader(client);
   const queryRef = preloadQuery(query);
 
-  const { renderStream } = renderDefaultTestApp({ client, queryRef });
+  using _disabledAct = disableActEnvironment();
+  const { renderStream } = await renderDefaultTestApp({ client, queryRef });
 
   {
     const { renderedComponents } = await renderStream.takeRender();
@@ -1278,7 +1293,8 @@ test("ignores cached result and suspends when `fetchPolicy` is network-only", as
     fetchPolicy: "network-only",
   });
 
-  const { renderStream } = renderDefaultTestApp({ client, queryRef });
+  using _disabledAct = disableActEnvironment();
+  const { renderStream } = await renderDefaultTestApp({ client, queryRef });
 
   {
     const { renderedComponents } = await renderStream.takeRender();
@@ -1307,7 +1323,8 @@ test("does not cache results when `fetchPolicy` is no-cache", async () => {
     fetchPolicy: "no-cache",
   });
 
-  const { renderStream } = renderDefaultTestApp({ client, queryRef });
+  using _disabledAct = disableActEnvironment();
+  const { renderStream } = await renderDefaultTestApp({ client, queryRef });
 
   {
     const { renderedComponents } = await renderStream.takeRender();
@@ -1339,7 +1356,8 @@ test("returns initial cache data followed by network data when `fetchPolicy` is 
     fetchPolicy: "cache-and-network",
   });
 
-  const { renderStream } = renderDefaultTestApp({ client, queryRef });
+  using _disabledAct = disableActEnvironment();
+  const { renderStream } = await renderDefaultTestApp({ client, queryRef });
 
   {
     const { snapshot, renderedComponents } = await renderStream.takeRender();
@@ -1373,7 +1391,8 @@ test("returns cached data when all data is present in the cache", async () => {
   const preloadQuery = createQueryPreloader(client);
   const queryRef = preloadQuery(query);
 
-  const { renderStream } = renderDefaultTestApp({ client, queryRef });
+  using _disabledAct = disableActEnvironment();
+  const { renderStream } = await renderDefaultTestApp({ client, queryRef });
 
   {
     const { snapshot, renderedComponents } = await renderStream.takeRender();
@@ -1417,7 +1436,8 @@ test("suspends and ignores partial data in the cache", async () => {
   const preloadQuery = createQueryPreloader(client);
   const queryRef = preloadQuery(query);
 
-  const { renderStream } = renderDefaultTestApp({ client, queryRef });
+  using _disabledAct = disableActEnvironment();
+  const { renderStream } = await renderDefaultTestApp({ client, queryRef });
 
   {
     const { renderedComponents } = await renderStream.takeRender();
@@ -1452,7 +1472,8 @@ test("throws when error is returned", async () => {
   const preloadQuery = createQueryPreloader(client);
   const queryRef = preloadQuery(query);
 
-  const { renderStream } = renderDefaultTestApp({ client, queryRef });
+  using _disabledAct = disableActEnvironment();
+  const { renderStream } = await renderDefaultTestApp({ client, queryRef });
 
   {
     const { renderedComponents } = await renderStream.takeRender();
@@ -1483,7 +1504,8 @@ test("returns error when error policy is 'all'", async () => {
   const preloadQuery = createQueryPreloader(client);
   const queryRef = preloadQuery(query, { errorPolicy: "all" });
 
-  const { renderStream } = renderDefaultTestApp({ client, queryRef });
+  using _disabledAct = disableActEnvironment();
+  const { renderStream } = await renderDefaultTestApp({ client, queryRef });
 
   {
     const { renderedComponents } = await renderStream.takeRender();
@@ -1517,7 +1539,8 @@ test("discards error when error policy is 'ignore'", async () => {
   const preloadQuery = createQueryPreloader(client);
   const queryRef = preloadQuery(query, { errorPolicy: "ignore" });
 
-  const { renderStream } = renderDefaultTestApp({ client, queryRef });
+  using _disabledAct = disableActEnvironment();
+  const { renderStream } = await renderDefaultTestApp({ client, queryRef });
 
   {
     const { renderedComponents } = await renderStream.takeRender();
@@ -1567,7 +1590,8 @@ test("passes context to the link", async () => {
     context: { valueA: "A", valueB: "B" },
   });
 
-  const { renderStream } = renderDefaultTestApp({ client, queryRef });
+  using _disabledAct = disableActEnvironment();
+  const { renderStream } = await renderDefaultTestApp({ client, queryRef });
 
   // initial render
   await renderStream.takeRender();
@@ -1633,7 +1657,8 @@ test("does not suspend and returns partial data when `returnPartialData` is `tru
     returnPartialData: true,
   });
 
-  const { renderStream } = renderDefaultTestApp({ client, queryRef });
+  using _disabledAct = disableActEnvironment();
+  const { renderStream } = await renderDefaultTestApp({ client, queryRef });
 
   {
     const { snapshot, renderedComponents } = await renderStream.takeRender();
@@ -1705,7 +1730,8 @@ test('enables canonical results when canonizeResults is "true"', async () => {
   const preloadQuery = createQueryPreloader(client);
   const queryRef = preloadQuery(query, { canonizeResults: true });
 
-  const { renderStream } = renderDefaultTestApp({ client, queryRef });
+  using _disabledAct = disableActEnvironment();
+  const { renderStream } = await renderDefaultTestApp({ client, queryRef });
 
   const { snapshot } = await renderStream.takeRender();
   const resultSet = new Set(snapshot.result?.data.results);
@@ -1763,7 +1789,8 @@ test("can disable canonical results when the cache's canonizeResults setting is 
   const preloadQuery = createQueryPreloader(client);
   const queryRef = preloadQuery(query, { canonizeResults: false });
 
-  const { renderStream } = renderDefaultTestApp({ client, queryRef });
+  using _disabledAct = disableActEnvironment();
+  const { renderStream } = await renderDefaultTestApp({ client, queryRef });
 
   const { snapshot } = await renderStream.takeRender();
   const resultSet = new Set(snapshot.result!.data.results);
@@ -1798,7 +1825,8 @@ test("suspends deferred queries until initial chunk loads then rerenders with de
   const preloadQuery = createQueryPreloader(client);
   const queryRef = preloadQuery(query);
 
-  const { renderStream } = renderDefaultTestApp({ client, queryRef });
+  using _disabledAct = disableActEnvironment();
+  const { renderStream } = await renderDefaultTestApp({ client, queryRef });
 
   {
     const { renderedComponents } = await renderStream.takeRender();
@@ -1853,6 +1881,115 @@ test("suspends deferred queries until initial chunk loads then rerenders with de
           message: "Hello world",
           recipient: { __typename: "Person", name: "Alice" },
         },
+      },
+      error: undefined,
+      networkStatus: NetworkStatus.ready,
+    });
+  }
+});
+
+test("masks result when dataMasking is `true`", async () => {
+  const { query, mocks } = setupMaskedVariablesCase();
+  const client = new ApolloClient({
+    dataMasking: true,
+    cache: new InMemoryCache(),
+    link: new MockLink(mocks),
+  });
+  const preloadQuery = createQueryPreloader(client);
+
+  const queryRef = preloadQuery(query, { variables: { id: "1" } });
+
+  using _disabledAct = disableActEnvironment();
+  const { renderStream } = await renderDefaultTestApp<
+    Masked<MaskedVariablesCaseData>
+  >({
+    client,
+    queryRef,
+  });
+
+  {
+    const { renderedComponents } = await renderStream.takeRender();
+
+    expect(renderedComponents).toStrictEqual(["App", "SuspenseFallback"]);
+  }
+
+  {
+    const { snapshot } = await renderStream.takeRender();
+
+    expect(snapshot.result).toEqual({
+      data: {
+        character: { __typename: "Character", id: "1" },
+      },
+      error: undefined,
+      networkStatus: NetworkStatus.ready,
+    });
+  }
+});
+
+test("does not mask result when dataMasking is `false`", async () => {
+  const { query, mocks } = setupMaskedVariablesCase();
+  const client = new ApolloClient({
+    dataMasking: false,
+    cache: new InMemoryCache(),
+    link: new MockLink(mocks),
+  });
+  const preloadQuery = createQueryPreloader(client);
+
+  const queryRef = preloadQuery(query, { variables: { id: "1" } });
+
+  using _disabledAct = disableActEnvironment();
+  const { renderStream } = await renderDefaultTestApp<MaskedVariablesCaseData>({
+    client,
+    queryRef,
+  });
+
+  {
+    const { renderedComponents } = await renderStream.takeRender();
+
+    expect(renderedComponents).toStrictEqual(["App", "SuspenseFallback"]);
+  }
+
+  {
+    const { snapshot } = await renderStream.takeRender();
+
+    expect(snapshot.result).toEqual({
+      data: {
+        character: { __typename: "Character", id: "1", name: "Spider-Man" },
+      },
+      error: undefined,
+      networkStatus: NetworkStatus.ready,
+    });
+  }
+});
+
+test("does not mask results by default", async () => {
+  const { query, mocks } = setupMaskedVariablesCase();
+  const client = new ApolloClient({
+    cache: new InMemoryCache(),
+    link: new MockLink(mocks),
+  });
+  const preloadQuery = createQueryPreloader(client);
+
+  const queryRef = preloadQuery(query, { variables: { id: "1" } });
+
+  using _disabledAct = disableActEnvironment();
+  const { renderStream } = await renderDefaultTestApp<MaskedVariablesCaseData>({
+    client,
+    queryRef,
+  });
+
+  {
+    const { renderedComponents } = await renderStream.takeRender();
+
+    expect(renderedComponents).toStrictEqual(["App", "SuspenseFallback"]);
+  }
+
+  {
+    const { snapshot } = await renderStream.takeRender();
+
+    expect(snapshot.result).toEqual({
+      data: {
+        character: { __typename: "Character", id: "1", name: "Spider-Man" },
       },
       error: undefined,
       networkStatus: NetworkStatus.ready,

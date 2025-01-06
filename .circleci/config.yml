@@ -15,7 +15,7 @@ jobs:
 
   Lint:
     docker:
-      - image: cimg/node:23.1.0
+      - image: cimg/node:23.3.0
     steps:
       - checkout
       - run: npm version
@@ -24,7 +24,7 @@ jobs:
 
   Formatting:
     docker:
-      - image: cimg/node:23.1.0
+      - image: cimg/node:23.3.0
     steps:
       - checkout
       - run: npm ci
@@ -32,7 +32,7 @@ jobs:
 
   Tests:
     docker:
-      - image: cimg/node:23.1.0
+      - image: cimg/node:23.3.0
     parameters:
       project:
         type: string
@@ -51,10 +51,17 @@ jobs:
           path: reports/junit
       - store_artifacts:
           path: reports/junit
+  Attest:
+    docker:
+      - image: cimg/node:23.3.0
+    steps:
+      - checkout
+      - run: npm ci
+      - run: npm run test:type-benches
 
   BuildTarball:
     docker:
-      - image: cimg/node:23.1.0
+      - image: cimg/node:23.3.0
     steps:
       - checkout
       - run: npm run ci:precheck
@@ -73,7 +80,7 @@ jobs:
       react:
         type: string
     docker:
-      - image: cimg/node:23.1.0-browsers
+      - image: cimg/node:23.3.0-browsers
     steps:
       - checkout
       - attach_workspace:
@@ -111,7 +118,7 @@ jobs:
       externalPackage:
         type: string
     docker:
-      - image: cimg/node:23.1.0
+      - image: cimg/node:23.3.0
     steps:
       - checkout
       - attach_workspace:
@@ -133,6 +140,7 @@ workflows:
             parameters:
               project:
                 ["Core Tests", "ReactDOM 17", "ReactDOM 18", "ReactDOM 19"]
+      - Attest
       - Formatting
       - Lint
       - BuildTarball
@@ -173,7 +181,7 @@ workflows:
                 - "@types/react@16.8 @types/react-dom@16.8"
                 - "@types/react@17 @types/react-dom@17"
                 - "@types/react@18 @types/react-dom@18"
-                - "@types/react@npm:types-react@19.0.0-rc.0 @types/react-dom@npm:types-react-dom@19.0.0-rc.0"
+                - "@types/react@19 @types/react-dom@19"
                 - "typescript@next"
   security-scans:
     jobs:
