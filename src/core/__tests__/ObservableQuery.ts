@@ -12,6 +12,7 @@ import { ObservableQuery } from "../ObservableQuery";
 import { QueryManager } from "../QueryManager";
 
 import {
+  DeepPartial,
   DocumentTransform,
   Observable,
   removeDirectivesFromDocument,
@@ -21,6 +22,7 @@ import { InMemoryCache } from "../../cache";
 import { ApolloError } from "../../errors";
 
 import { MockLink, MockSubscriptionLink, tick, wait } from "../../testing";
+import { expectTypeOf } from "expect-type";
 
 import { SubscriptionObserver } from "zen-observable-ts";
 import { waitFor } from "@testing-library/react";
@@ -1001,7 +1003,7 @@ describe("ObservableQuery", () => {
         data: undefined,
         errors: [error],
         loading: false,
-        networkStatus: NetworkStatus.ready,
+        networkStatus: NetworkStatus.error,
         // TODO: This is not present on the emitted result so this should match
         partial: true,
       });
@@ -1682,6 +1684,7 @@ describe("ObservableQuery", () => {
         query,
         fetchPolicy: "cache-and-network",
         returnPartialData: true,
+        notifyOnNetworkStatusChange: true,
       });
 
       const stream = new ObservableStream(observable);
@@ -1722,7 +1725,7 @@ describe("ObservableQuery", () => {
 
       expect(result).toEqualApolloQueryResult({
         data: {
-          counter: 5,
+          counter: 4,
           name: "Ben",
         },
         loading: false,
@@ -2276,6 +2279,7 @@ describe("ObservableQuery", () => {
       const result = await observable.result();
       const currentResult = observable.getCurrentResult();
 
+      // TODO: This should include an `error` property, not just `errors`
       expect(result).toEqualApolloQueryResult({
         data: dataOne,
         errors: [error],
@@ -2286,9 +2290,7 @@ describe("ObservableQuery", () => {
         data: dataOne,
         errors: [error],
         loading: false,
-        // TODO: The networkStatus returned here is different than the one
-        // returned from `observable.result()`. These should match
-        networkStatus: NetworkStatus.ready,
+        networkStatus: NetworkStatus.error,
       });
     });
 
@@ -2490,6 +2492,11 @@ describe("ObservableQuery", () => {
       });
 
       await expect(stream).toEmitApolloQueryResult({
+        data: dataTwo,
+        loading: false,
+        networkStatus: NetworkStatus.ready,
+      });
+      expect(observable.getCurrentResult()).toEqualApolloQueryResult({
         data: dataTwo,
         loading: false,
         networkStatus: NetworkStatus.ready,
@@ -3350,6 +3357,68 @@ describe("ObservableQuery", () => {
     });
   });
 
+  describe("updateQuery", () => {
+    it("should be able to determine if the previous result is complete", async () => {
+      const client = new ApolloClient({
+        cache: new InMemoryCache({ addTypename: false }),
+        link: new MockLink([
+          {
+            request: { query, variables },
+            result: { data: dataOne },
+          },
+        ]),
+      });
+
+      const observable = client.watchQuery({
+        query,
+        variables,
+      });
+
+      let updateQuerySpy = jest.fn();
+      observable.updateQuery((previous, { complete, previousData }) => {
+        updateQuerySpy();
+        expect(previous).toEqual({});
+        expect(complete).toBe(false);
+        expect(previousData).toStrictEqual(previous);
+
+        if (complete) {
+          expectTypeOf(previousData).toEqualTypeOf<typeof dataOne>();
+        } else {
+          expectTypeOf(previousData).toEqualTypeOf<
+            DeepPartial<typeof previous> | undefined
+          >();
+        }
+      });
+
+      observable.subscribe(jest.fn());
+
+      await waitFor(() => {
+        expect(observable.getCurrentResult(false)).toEqual({
+          data: dataOne,
+          loading: false,
+          networkStatus: NetworkStatus.ready,
+        });
+      });
+
+      observable.updateQuery((previous, { complete, previousData }) => {
+        updateQuerySpy();
+        expect(previous).toEqual(dataOne);
+        expect(complete).toBe(true);
+        expect(previousData).toStrictEqual(previous);
+
+        if (complete) {
+          expectTypeOf(previousData).toEqualTypeOf<typeof dataOne>();
+        } else {
+          expectTypeOf(previousData).toEqualTypeOf<
+            DeepPartial<typeof previous> | undefined
+          >();
+        }
+      });
+
+      expect(updateQuerySpy).toHaveBeenCalledTimes(2);
+    });
+  });
+
   it("QueryInfo does not notify for !== but deep-equal results", async () => {
     const client = new ApolloClient({
       cache: new InMemoryCache({ addTypename: false }),
@@ -3374,7 +3443,10 @@ describe("ObservableQuery", () => {
     const queryInfo = observable["queryInfo"];
     const cache = queryInfo["cache"];
     const setDiffSpy = jest.spyOn(queryInfo, "setDiff");
-    const notifySpy = jest.spyOn(queryInfo, "notify");
+    const notifySpy = jest.spyOn(
+      observable,
+      "notify" as any /* this is not a public method so we cast */
+    );
 
     const stream = new ObservableStream(observable);
 
