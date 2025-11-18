@@ -32,7 +32,7 @@ jobs:
       # Check out the repository, using the Github Actions Bot app's token so
       # that we can push later.
       - name: Checkout repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           token: ${{ steps.github-actions-bot-app-token.outputs.token }}
           # Checkout release branch entered when workflow was kicked off
@@ -41,10 +41,10 @@ jobs:
           # with the correct commits
           fetch-depth: 0
 
-      - name: Setup Node.js 20.x
-        uses: actions/setup-node@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
         with:
-          node-version: 20.x
+          node-version: ">=23.6.0"
 
       - name: Write latest version to package.json and package-lock.json
         run: |

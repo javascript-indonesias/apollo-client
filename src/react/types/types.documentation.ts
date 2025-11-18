@@ -72,7 +72,7 @@ export interface QueryOptionsDocumentation {
   /**
    * If `true`, the in-progress query's associated component re-renders whenever the network status changes or a network error occurs.
    *
-   * The default value is `false`.
+   * The default value is `true`.
    *
    * @docGroup 2. Networking options
    */
@@ -107,29 +107,6 @@ export interface QueryOptionsDocumentation {
   refetchWritePolicy_suspense: unknown;
 
   /**
-   * If `true`, causes a query refetch if the query result is detected as partial.
-   *
-   * The default value is `false`.
-   *
-   * @deprecated
-   * Setting this option is unnecessary in Apollo Client 3, thanks to a more consistent application of fetch policies. It might be removed in a future release.
-   */
-  partialRefetch: unknown;
-
-  /**
-   * Whether to canonize cache results before returning them. Canonization
-   * takes some extra time, but it speeds up future deep equality comparisons.
-   * Defaults to false.
-   *
-   * @deprecated
-   * Using `canonizeResults` can result in memory leaks so we generally do not
-   * recommend using this option anymore.
-   * A future version of Apollo Client will contain a similar feature without
-   * the risk of memory leaks.
-   */
-  canonizeResults: unknown;
-
-  /**
    * If true, the query is not executed.
    *
    * The default value is `false`.
@@ -144,28 +121,12 @@ export interface QueryOptionsDocumentation {
    * @deprecated We recommend using `skipToken` in place of the `skip` option as
    * it is more type-safe.
    *
-   * This option is deprecated and only supported to ease the migration from useQuery. It will be removed in a future release.
+   * This option is deprecated and only supported to ease the migration from `useQuery`. It will be removed in a future release.
+   * Please use [`skipToken`](https://www.apollographql.com/docs/react/api/react/hooks#skiptoken) instead of the `skip` option as it is more type-safe.
    *
    * @docGroup 1. Operation options
    */
   skip_deprecated: unknown;
-
-  /**
-   * A callback function that's called when your query successfully completes with zero errors (or if `errorPolicy` is `ignore` and partial data is returned).
-   *
-   * This function is passed the query's result `data`.
-   *
-   * @docGroup 1. Operation options
-   */
-  onCompleted: unknown;
-  /**
-   * A callback function that's called when the query encounters one or more errors (unless `errorPolicy` is `ignore`).
-   *
-   * This function is passed an `ApolloError` object that contains either a `networkError` object or a `graphQLErrors` array, depending on the error(s) that occurred.
-   *
-   * @docGroup 1. Operation options
-   */
-  onError: unknown;
 
   /**
    * The instance of `ApolloClient` to use to execute the query.
@@ -235,7 +196,8 @@ export interface QueryResultDocumentation {
    */
   previousData: unknown;
   /**
-   * If the query produces one or more errors, this object contains either an array of `graphQLErrors` or a single `networkError`. Otherwise, this value is `undefined`.
+   * A single ErrorLike object describing the error that occurred during the latest
+   * query execution.
    *
    * For more information, see [Handling operation errors](https://www.apollographql.com/docs/react/data/error-handling/).
    *
@@ -243,7 +205,7 @@ export interface QueryResultDocumentation {
    */
   error: unknown;
   /**
-   * If `true`, the query is still in flight and results have not yet been returned.
+   * If `true`, the query is still in flight.
    *
    * @docGroup 2. Network info
    */
@@ -256,14 +218,6 @@ export interface QueryResultDocumentation {
    * @docGroup 2. Network info
    */
   networkStatus: unknown;
-  /**
-   * If `true`, the associated lazy query has been executed.
-   *
-   * This field is only present on the result object returned by [`useLazyQuery`](/react/data/queries/#executing-queries-manually).
-   *
-   * @docGroup 2. Network info
-   */
-  called: unknown;
   /**
    * An object containing the variables that were provided for the query.
    *
@@ -278,7 +232,11 @@ export interface QueryResultDocumentation {
    *
    * See also [Refetching](https://www.apollographql.com/docs/react/data/queries/#refetching).
    *
-   *   @docGroup 3. Helper functions
+   * Returns a `ResultPromise` with an additional `.retain()` method. Calling
+   * `.retain()` keeps the network operation running even if the `ObservableQuery`
+   * no longer requires the result.
+   *
+   * @docGroup 3. Helper functions
    */
   refetch: unknown;
   /**
@@ -311,6 +269,31 @@ export interface QueryResultDocumentation {
    * @docGroup 3. Helper functions
    */
   updateQuery: unknown;
+
+  /**
+   * Describes the completeness of `data`.
+   *
+   * - `empty`: No data could be fulfilled from the cache or the result is
+   *   incomplete. `data` is `undefined`.
+   * - `partial`: Some data could be fulfilled from the cache but `data` is
+   *   incomplete. This is only possible when `returnPartialData` is `true`.
+   * - `streaming`: `data` is incomplete as a result of a deferred query and
+   *   the result is still streaming in.
+   * - `complete`: `data` is a fully satisfied query result fulfilled
+   *   either from the cache or network.
+   *
+   * @docGroup 1. Operation data
+   */
+  dataState: unknown;
+
+  /**
+   * Describes whether `data` is a complete or partial result. This flag is only
+   * set when `returnPartialData` is `true` in query options.
+   *
+   * @deprecated This field will be removed in a future version of Apollo Client.
+   * @docGroup 1. Operation data
+   */
+  partial: boolean;
 }
 
 export interface MutationOptionsDocumentation {
@@ -443,7 +426,7 @@ export interface MutationOptionsDocumentation {
   /**
    * If `true`, the in-progress mutation's associated component re-renders whenever the network status changes or a network error occurs.
    *
-   * The default value is `false`.
+   * The default value is `true`.
    *
    * @docGroup 2. Networking options
    */
@@ -464,25 +447,13 @@ export interface MutationOptionsDocumentation {
    * @docGroup 1. Operation options
    */
   onError: unknown;
-  /**
-   * If `true`:
-   *
-   * - The initial state update (setting loading to true) is skipped
-   * - The success state update (setting data and setting loading to false) is skipped
-   * - Error updates will still occur
-   *
-   * The default value is `false`.
-   *
-   * This option is useful when you want to execute a mutation but don't need to track its progress or result in the UI, potentially improving performance by reducing re-renders.
-   *
-   * @docGroup 1. Operation options
-   */
-  ignoreResults: unknown;
 }
 
 export interface MutationResultDocumentation {
   /**
-   * The data returned from your mutation. Can be `undefined` if `ignoreResults` is `true`.
+   * The data returned from your mutation. Can be `undefined` if the `errorPolicy`
+   * is `all` or `ignore` and the server returns a GraphQL response with `errors`
+   * but not `data` or a network error is returned.
    */
   data: unknown;
   /**
@@ -509,6 +480,10 @@ export interface MutationResultDocumentation {
    * A function that you can call to reset the mutation's result to its initial, uncalled state.
    */
   reset: unknown;
+  /**
+   * Custom extensions returned from the GraphQL server
+   */
+  extensions: unknown;
 }
 
 export interface SubscriptionOptionsDocumentation {
@@ -565,38 +540,18 @@ export interface SubscriptionOptionsDocumentation {
 
   /**
    * Allows the registration of a callback function that will be triggered each time the `useSubscription` Hook / `Subscription` component completes the subscription.
-   *
-   * @since 3.7.0
    */
   onComplete: unknown;
 
   /**
    * Allows the registration of a callback function that will be triggered each time the `useSubscription` Hook / `Subscription` component receives data. The callback `options` object param consists of the current Apollo Client instance in `client`, and the received subscription data in `data`.
-   *
-   * @since 3.7.0
    */
   onData: unknown;
 
   /**
-   * Allows the registration of a callback function that will be triggered each time the `useSubscription` Hook / `Subscription` component receives data. The callback `options` object param consists of the current Apollo Client instance in `client`, and the received subscription data in `subscriptionData`.
-   *
-   * @deprecated Use `onData` instead
-   */
-  onSubscriptionData: unknown;
-
-  /**
    * Allows the registration of a callback function that will be triggered each time the `useSubscription` Hook / `Subscription` component receives an error.
-   *
-   * @since 3.7.0
    */
   onError: unknown;
-
-  /**
-   * Allows the registration of a callback function that will be triggered when the `useSubscription` Hook / `Subscription` component completes the subscription.
-   *
-   * @deprecated Use `onComplete` instead
-   */
-  onSubscriptionComplete: unknown;
 }
 
 export interface SubscriptionResultDocumentation {

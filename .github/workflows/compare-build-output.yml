@@ -10,19 +10,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           # Fetch entire git history so we have the parent commit to compare against
           fetch-depth: 0
-      - name: Setup Node.js 20.x
-        uses: actions/setup-node@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
         with:
-          node-version: 20.x
+          node-version: ">=23.6.0"
       - name: Install dependencies (with cache)
         uses: bahmutov/npm-install@v1
 
       - name: Run comparison script
         id: attw
-        run: ./config/compare-build-output-to.sh $(git merge-base HEAD origin/${{ github.base_ref }}) > $GITHUB_STEP_SUMMARY
+        run: ./config/compare-build-output-to.sh $(git merge-base HEAD origin/${{ github.base_ref }}) | tee $GITHUB_STEP_SUMMARY
         env:
           RUNNER_TEMP: ${{ runner.temp }}

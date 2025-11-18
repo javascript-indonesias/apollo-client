@@ -1,11 +1,15 @@
-import { Client } from "graphql-ws";
-import { ExecutionResult, GraphQLError } from "graphql";
-import gql from "graphql-tag";
+import type { ExecutionResult } from "graphql";
+import { GraphQLError } from "graphql";
+import { gql } from "graphql-tag";
+import type { Client } from "graphql-ws";
+import type { Observable } from "rxjs";
 
-import { Observable } from "../../../utilities";
-import { ApolloError } from "../../../errors";
-import { execute } from "../../core";
-import { GraphQLWsLink } from "..";
+import { CombinedGraphQLErrors } from "@apollo/client/errors";
+import { GraphQLWsLink } from "@apollo/client/link/subscriptions";
+import {
+  executeWithDefaultContext as execute,
+  ObservableStream,
+} from "@apollo/client/testing/internal";
 
 const query = gql`
   query SampleQuery {
@@ -143,7 +147,7 @@ describe("GraphQLWSlink", () => {
       );
     });
 
-    it("with ApolloError on subscription error via Event (network disconnected)", async () => {
+    it("with Error on subscription error via Event (network disconnected)", async () => {
       const subscribe: Client["subscribe"] = (_, sink) => {
         // A WebSocket error event receives a generic Event
         // See: https://developer.mozilla.org/en-US/docs/Web/API/WebSocket/error_event
@@ -159,7 +163,7 @@ describe("GraphQLWSlink", () => {
       );
     });
 
-    it("with ApolloError on subscription error via GraphQLError[]", async () => {
+    it("with CombinedGraphQLErrors on subscription error via GraphQLError[]", async () => {
       const subscribe: Client["subscribe"] = (_, sink) => {
         sink.error([new GraphQLError("Foo bar.")]);
         return () => {};
@@ -169,10 +173,36 @@ describe("GraphQLWSlink", () => {
 
       const obs = execute(link, { query: subscription });
       await expect(observableToArray(obs)).rejects.toEqual(
-        new ApolloError({
-          graphQLErrors: [new GraphQLError("Foo bar.")],
-        })
+        new CombinedGraphQLErrors({ errors: [{ message: "Foo bar." }] })
       );
     });
   });
+});
+
+// https://github.com/apollographql/apollo-client/issues/12946
+test("sends only known keys to the GraphQLWsLink", async () => {
+  const knownKeys = [
+    "query",
+    "variables",
+    "operationName",
+    "extensions",
+  ].sort();
+
+  type SubscribeFn = Client["subscribe"];
+  const subscribe = jest.fn<ReturnType<SubscribeFn>, Parameters<SubscribeFn>>(
+    (_payload, sink) => {
+      sink.complete();
+      return () => {};
+    }
+  );
+  const client = mockClient(subscribe);
+  const link = new GraphQLWsLink(client);
+
+  const stream = new ObservableStream(execute(link, { query: subscription }));
+  await stream.takeComplete();
+
+  expect(subscribe).toHaveBeenCalledTimes(1);
+
+  const payload = subscribe.mock.calls[0][0];
+  expect(Object.keys(payload).sort()).toStrictEqual(knownKeys);
 });

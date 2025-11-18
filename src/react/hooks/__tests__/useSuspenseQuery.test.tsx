@@ -1,82 +1,90 @@
-import React, { Fragment, StrictMode, Suspense, useTransition } from "react";
-import {
-  act,
-  screen,
-  waitFor,
-  RenderHookOptions,
-  renderHook,
-} from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
-import { ErrorBoundary, FallbackProps } from "react-error-boundary";
-import { GraphQLError } from "graphql";
-import { InvariantError } from "ts-invariant";
-import { equal } from "@wry/equality";
-import { expectTypeOf } from "expect-type";
-
-import {
-  gql,
-  ApolloCache,
-  ApolloClient,
-  ApolloError,
-  ApolloLink,
-  DocumentNode,
-  InMemoryCache,
-  Observable,
-  OperationVariables,
-  SubscribeToMoreOptions,
-  TypedDocumentNode,
-  split,
-  NetworkStatus,
-  ApolloQueryResult,
-  ErrorPolicy,
-} from "../../../core";
-import {
-  DeepPartial,
-  compact,
-  concatPagination,
-  getMainDefinition,
-  offsetLimitPagination,
-} from "../../../utilities";
-import {
-  MockedProvider,
-  MockedResponse,
-  MockSubscriptionLink,
-  MockLink,
-} from "../../../testing";
-import { ApolloProvider } from "../../context";
-import { SuspenseQueryHookFetchPolicy, skipToken } from "../../../react";
-import { UseSuspenseQueryResult, useSuspenseQuery } from "../useSuspenseQuery";
-import {
-  RefetchWritePolicy,
-  WatchQueryFetchPolicy,
-} from "../../../core/watchQueryOptions";
-import {
-  PaginatedCaseData,
-  PaginatedCaseVariables,
-  setupPaginatedCase,
-  spyOnConsole,
-  actAsync,
-  renderAsync,
-  renderHookAsync,
-} from "../../../testing/internal";
-import { Masked, MaskedDocumentNode, Unmasked } from "../../../masking";
-
+import type { RenderHookOptions } from "@testing-library/react";
+import { act, renderHook, screen, waitFor } from "@testing-library/react";
 import {
   createRenderStream,
   disableActEnvironment,
   useTrackRenders,
 } from "@testing-library/react-render-stream";
+import { userEvent } from "@testing-library/user-event";
+import { equal } from "@wry/equality";
+import { expectTypeOf } from "expect-type";
+import type { GraphQLFormattedError } from "graphql";
+import { GraphQLError } from "graphql";
+import React, { Fragment, StrictMode, Suspense, useTransition } from "react";
+import type { FallbackProps } from "react-error-boundary";
+import { ErrorBoundary } from "react-error-boundary";
+import { delay, Observable, of } from "rxjs";
+
+import type {
+  ApolloCache,
+  DataValue,
+  DocumentNode,
+  ErrorPolicy,
+  ObservableQuery,
+  OperationVariables,
+  TypedDocumentNode,
+} from "@apollo/client";
+import {
+  ApolloClient,
+  ApolloLink,
+  CombinedGraphQLErrors,
+  gql,
+  InMemoryCache,
+  NetworkStatus,
+} from "@apollo/client";
+import type { Incremental } from "@apollo/client/incremental";
+import {
+  Defer20220824Handler,
+  NotImplementedHandler,
+} from "@apollo/client/incremental";
+import type { Unmasked } from "@apollo/client/masking";
+import {
+  ApolloProvider,
+  skipToken,
+  useSuspenseQuery,
+} from "@apollo/client/react";
+import { MockLink, MockSubscriptionLink } from "@apollo/client/testing";
+import type {
+  PaginatedCaseData,
+  PaginatedCaseVariables,
+} from "@apollo/client/testing/internal";
+import {
+  actAsync,
+  createClientWrapper,
+  createMockWrapper,
+  markAsStreaming,
+  renderAsync,
+  renderHookAsync,
+  setupPaginatedCase,
+  spyOnConsole,
+} from "@apollo/client/testing/internal";
+import { MockedProvider } from "@apollo/client/testing/react";
+import type { DeepPartial } from "@apollo/client/utilities";
+import {
+  concatPagination,
+  offsetLimitPagination,
+} from "@apollo/client/utilities";
+import { compact, getMainDefinition } from "@apollo/client/utilities/internal";
+import { InvariantError } from "@apollo/client/utilities/invariant";
+
+import type {
+  RefetchWritePolicy,
+  WatchQueryFetchPolicy,
+} from "../../../core/watchQueryOptions.js";
+
+import { renderUseSuspenseQuery } from "./useSuspenseQuery/testUtils.js";
 
 const IS_REACT_19 = React.version.startsWith("19");
 
-type RenderSuspenseHookOptions<Props, TSerializedCache = {}> = Omit<
+type RenderSuspenseHookOptions<Props> = Omit<
   RenderHookOptions<Props>,
   "wrapper"
 > & {
-  client?: ApolloClient<TSerializedCache>;
+  client?: ApolloClient;
+  incrementalHandler?: Incremental.Handler<any>;
   link?: ApolloLink;
-  cache?: ApolloCache<TSerializedCache>;
-  mocks?: MockedResponse[];
+  cache?: ApolloCache;
+  mocks?: MockLink.MockedResponse[];
   strictMode?: boolean;
 };
 
@@ -92,9 +100,14 @@ interface SimpleQueryData {
   greeting: string;
 }
 
+/**
+ * @deprecated
+ * Use the `renderUseSuspenseQuery` helper from utils which uses render streams
+ * instead of function call render counting.
+ */
 async function renderSuspenseHook<Result, Props>(
   render: (initialProps: Props) => Result,
-  options: RenderSuspenseHookOptions<Props> = Object.create(null)
+  options: RenderSuspenseHookOptions<Props> = {}
 ) {
   function SuspenseFallback() {
     renders.suspenseCount++;
@@ -117,6 +130,8 @@ async function renderSuspenseHook<Result, Props>(
     new ApolloClient({
       cache: options.cache || new InMemoryCache(),
       link: options.link || new MockLink(mocks),
+      incrementalHandler:
+        options.incrementalHandler || new NotImplementedHandler(),
     });
 
   const { rerender, ...view } = await renderHookAsync(
@@ -162,7 +177,7 @@ async function renderSuspenseHook<Result, Props>(
 }
 
 function useSimpleQueryCase() {
-  const query: TypedDocumentNode<SimpleQueryData> = gql`
+  const query: TypedDocumentNode<SimpleQueryData, Record<string, never>> = gql`
     query UserQuery {
       greeting
     }
@@ -179,7 +194,7 @@ function useSimpleQueryCase() {
   return { query, mocks };
 }
 
-function usePaginatedCase() {
+declare namespace usePaginatedCase {
   interface QueryData {
     letters: {
       letter: string;
@@ -191,8 +206,12 @@ function usePaginatedCase() {
     limit?: number;
     offset?: number;
   }
-
-  const query: TypedDocumentNode<QueryData, Variables> = gql`
+}
+function usePaginatedCase({ delay = 10 } = {}) {
+  const query: TypedDocumentNode<
+    usePaginatedCase.QueryData,
+    usePaginatedCase.Variables
+  > = gql`
     query letters($limit: Int, $offset: Int) {
       letters(limit: $limit) {
         letter
@@ -215,7 +234,7 @@ function usePaginatedCase() {
       setTimeout(() => {
         observer.next({ data: { letters } });
         observer.complete();
-      }, 10);
+      }, delay);
     });
   });
 
@@ -229,18 +248,16 @@ interface ErrorCaseData {
   };
 }
 
-function useErrorCase<TData extends ErrorCaseData>(
-  {
-    data,
-    networkError,
-    graphQLErrors,
-  }: {
-    data?: Unmasked<TData>;
-    networkError?: Error;
-    graphQLErrors?: GraphQLError[];
-  } = Object.create(null)
-) {
-  const query: TypedDocumentNode<TData, never> = gql`
+function useErrorCase<TData extends ErrorCaseData>({
+  data,
+  networkError,
+  graphQLErrors,
+}: {
+  data?: Unmasked<TData>;
+  networkError?: Error;
+  graphQLErrors?: GraphQLError[];
+} = {}) {
+  const query: TypedDocumentNode<TData, Record<string, never>> = gql`
     query MyQuery {
       currentUser {
         id
@@ -249,7 +266,7 @@ function useErrorCase<TData extends ErrorCaseData>(
     }
   `;
 
-  const mock: MockedResponse<TData> = compact({
+  const mock: MockLink.MockedResponse<TData> = compact({
     request: { query },
     result: (data || graphQLErrors) && compact({ data, errors: graphQLErrors }),
     error: networkError,
@@ -289,7 +306,10 @@ function useVariablesQueryCase() {
         character: { __typename: "Character", id: String(index + 1), name },
       },
     },
-    delay: 20,
+    // React runs layout effects much later in React 18 which means tracked
+    // components aren't captured correctly, specifically when changing
+    // variables that cause the component to suspend.
+    delay: IS_REACT_19 ? 20 : 200,
   }));
 
   return { query, mocks };
@@ -331,7 +351,7 @@ function useMaskedVariablesQueryCase() {
     }
   `;
 
-  const query: MaskedDocumentNode<
+  const query: TypedDocumentNode<
     MaskedVariablesCaseData,
     VariablesCaseVariables
   > = document;
@@ -373,7 +393,7 @@ describe("useSuspenseQuery", () => {
       });
     }).toThrowError(
       new InvariantError(
-        "Running a Query requires a graphql Query, but a Mutation was used instead."
+        "Running a query requires a graphql query, but a mutation was used instead."
       )
     );
   });
@@ -456,11 +476,13 @@ describe("useSuspenseQuery", () => {
     });
 
     using _disabledAct = disableActEnvironment();
-    const { takeRender, replaceSnapshot, render } = await createRenderStream<
-      UseSuspenseQueryResult<SimpleQueryData, OperationVariables>
-    >({
-      snapshotDOM: true,
-    });
+    const { takeRender, replaceSnapshot, render } = createRenderStream<
+      useSuspenseQuery.Result<
+        SimpleQueryData,
+        OperationVariables,
+        "complete" | "streaming"
+      >
+    >({ snapshotDOM: true });
     await render(<App />, {
       wrapper: ({ children }) => (
         <ApolloProvider client={client}>{children}</ApolloProvider>
@@ -478,8 +500,9 @@ describe("useSuspenseQuery", () => {
       const { withinDOM, snapshot } = await takeRender();
       expect(withinDOM().queryByText("loading")).not.toBeInTheDocument();
       expect(withinDOM().getByText("Hello")).toBeInTheDocument();
-      expect(snapshot).toMatchObject({
+      expect(snapshot).toStrictEqualTyped({
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -495,17 +518,20 @@ describe("useSuspenseQuery", () => {
     );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         ...mocks[0].result,
+        dataState: "complete",
+        networkStatus: NetworkStatus.ready,
         error: undefined,
       });
     });
 
     expect(renders.suspenseCount).toBe(1);
     expect(renders.count).toBe(2 + (IS_REACT_19 ? renders.suspenseCount : 0));
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -521,8 +547,10 @@ describe("useSuspenseQuery", () => {
     );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         ...mocks[0].result,
+        dataState: "complete",
+        networkStatus: NetworkStatus.ready,
         error: undefined,
       });
     });
@@ -534,14 +562,16 @@ describe("useSuspenseQuery", () => {
     expect(result.current).toBe(previousResult);
     expect(renders.count).toBe(3 + (IS_REACT_19 ? renders.suspenseCount : 0));
     expect(renders.suspenseCount).toBe(1);
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
       {
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -559,8 +589,10 @@ describe("useSuspenseQuery", () => {
     expect(screen.getByText("loading")).toBeInTheDocument();
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         ...mocks[0].result,
+        dataState: "complete",
+        networkStatus: NetworkStatus.ready,
         error: undefined,
       });
     });
@@ -585,17 +617,21 @@ describe("useSuspenseQuery", () => {
     });
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         ...mocks[0].result,
+        dataState: "complete",
+        networkStatus: NetworkStatus.ready,
         error: undefined,
       });
     });
 
     const previousResult = result.current;
 
-    client.writeQuery({
-      query,
-      data: { greeting: "Updated cache greeting" },
+    act(() => {
+      client.writeQuery({
+        query,
+        data: { greeting: "Updated cache greeting" },
+      });
     });
 
     await waitFor(() => {
@@ -609,114 +645,11 @@ describe("useSuspenseQuery", () => {
     expect(result.current.subscribeToMore).toBe(previousResult.subscribeToMore);
   });
 
-  it('enables canonical results when canonizeResults is "true"', async () => {
-    interface Result {
-      __typename: string;
-      value: number;
-    }
-
-    const cache = new InMemoryCache({
-      typePolicies: {
-        Result: {
-          keyFields: false,
-        },
-      },
-    });
-
-    const query: TypedDocumentNode<{ results: Result[] }> = gql`
-      query {
-        results {
-          value
-        }
-      }
-    `;
-
-    const results: Result[] = [
-      { __typename: "Result", value: 0 },
-      { __typename: "Result", value: 1 },
-      { __typename: "Result", value: 1 },
-      { __typename: "Result", value: 2 },
-      { __typename: "Result", value: 3 },
-      { __typename: "Result", value: 5 },
-    ];
-
-    cache.writeQuery({
-      query,
-      data: { results },
-    });
-
-    const { result } = await renderSuspenseHook(
-      () => useSuspenseQuery(query, { canonizeResults: true }),
-      { cache }
-    );
-
-    const { data } = result.current;
-    const resultSet = new Set(data.results);
-    const values = Array.from(resultSet).map((item) => item.value);
-
-    expect(data).toEqual({ results });
-    expect(data.results.length).toBe(6);
-    expect(resultSet.size).toBe(5);
-    expect(values).toEqual([0, 1, 2, 3, 5]);
-  });
-
-  it("can disable canonical results when the cache's canonizeResults setting is true", async () => {
-    interface Result {
-      __typename: string;
-      value: number;
-    }
-
-    const cache = new InMemoryCache({
-      canonizeResults: true,
-      typePolicies: {
-        Result: {
-          keyFields: false,
-        },
-      },
-    });
-
-    const query: TypedDocumentNode<{ results: Result[] }> = gql`
-      query {
-        results {
-          value
-        }
-      }
-    `;
-
-    const results: Result[] = [
-      { __typename: "Result", value: 0 },
-      { __typename: "Result", value: 1 },
-      { __typename: "Result", value: 1 },
-      { __typename: "Result", value: 2 },
-      { __typename: "Result", value: 3 },
-      { __typename: "Result", value: 5 },
-    ];
-
-    cache.writeQuery({
-      query,
-      data: { results },
-    });
-
-    const { result } = await renderSuspenseHook(
-      () => useSuspenseQuery(query, { canonizeResults: false }),
-      { cache }
-    );
-
-    const { data } = result.current;
-    const resultSet = new Set(data.results);
-    const values = Array.from(resultSet).map((item) => item.value);
-
-    expect(data).toEqual({ results });
-    expect(data.results.length).toBe(6);
-    expect(resultSet.size).toBe(6);
-    expect(values).toEqual([0, 1, 1, 2, 3, 5]);
-  });
-
   it("tears down the query on unmount", async () => {
     const { query, mocks } = useSimpleQueryCase();
 
     const client = new ApolloClient({
-      link: new ApolloLink(() => Observable.of(mocks[0].result)),
+      link: new ApolloLink(() => of(mocks[0].result)),
       cache: new InMemoryCache(),
     });
 
@@ -1073,16 +1006,12 @@ describe("useSuspenseQuery", () => {
     const { query } = useSimpleQueryCase();
 
     const globalClient = new ApolloClient({
-      link: new ApolloLink(() =>
-        Observable.of({ data: { greeting: "global hello" } })
-      ),
+      link: new ApolloLink(() => of({ data: { greeting: "global hello" } })),
       cache: new InMemoryCache(),
     });
 
     const localClient = new ApolloClient({
-      link: new ApolloLink(() =>
-        Observable.of({ data: { greeting: "local hello" } })
-      ),
+      link: new ApolloLink(() => of({ data: { greeting: "local hello" } })),
       cache: new InMemoryCache(),
     });
 
@@ -1095,9 +1024,10 @@ describe("useSuspenseQuery", () => {
       expect(result.current.data).toEqual({ greeting: "local hello" })
     );
 
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
         data: { greeting: "local hello" },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -1108,16 +1038,12 @@ describe("useSuspenseQuery", () => {
     const { query } = useSimpleQueryCase();
 
     const globalClient = new ApolloClient({
-      link: new ApolloLink(() =>
-        Observable.of({ data: { greeting: "global hello" } })
-      ),
+      link: new ApolloLink(() => of({ data: { greeting: "global hello" } })),
       cache: new InMemoryCache(),
     });
 
     const localClient = new ApolloClient({
-      link: new ApolloLink(() =>
-        Observable.of({ data: { greeting: "local hello" } })
-      ),
+      link: new ApolloLink(() => of({ data: { greeting: "local hello" } })),
       cache: new InMemoryCache(),
     });
 
@@ -1132,14 +1058,16 @@ describe("useSuspenseQuery", () => {
 
     // React double invokes the render function in strict mode so we expect
     // to render 2 frames after the initial suspense.
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
         data: { greeting: "local hello" },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
       {
         data: { greeting: "local hello" },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -1150,9 +1078,7 @@ describe("useSuspenseQuery", () => {
     const { query } = useSimpleQueryCase();
 
     const client = new ApolloClient({
-      link: new ApolloLink(() =>
-        Observable.of({ data: { greeting: "hello" } })
-      ),
+      link: new ApolloLink(() => of({ data: { greeting: "hello" } })),
       cache: new InMemoryCache(),
     });
 
@@ -1171,43 +1097,51 @@ describe("useSuspenseQuery", () => {
   it("suspends when changing variables", async () => {
     const { query, mocks } = useVariablesQueryCase();
 
-    const { result, rerenderAsync, renders } = await renderSuspenseHook(
+    using _disabledAct = disableActEnvironment();
+    const { rerender, takeRender } = await renderUseSuspenseQuery(
       ({ id }) => useSuspenseQuery(query, { variables: { id } }),
-      { mocks, initialProps: { id: "1" } }
+      { wrapper: createMockWrapper({ mocks }), initialProps: { id: "1" } }
     );
 
-    await waitFor(() => {
-      expect(result.current).toMatchObject({
+    {
+      const { renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["<Suspense />"]);
+    }
+
+    {
+      const { snapshot, renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["useSuspenseQuery"]);
+      expect(snapshot).toStrictEqualTyped({
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
-    });
+    }
 
-    await rerenderAsync({ id: "2" });
+    await rerender({ id: "2" });
 
-    await waitFor(() => {
-      expect(result.current).toMatchObject({
+    {
+      const { renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["<Suspense />"]);
+    }
+
+    {
+      const { snapshot, renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["useSuspenseQuery"]);
+      expect(snapshot).toStrictEqualTyped({
         ...mocks[1].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
-    });
+    }
 
-    expect(renders.count).toBe(4 + (IS_REACT_19 ? renders.suspenseCount : 0));
-    expect(renders.suspenseCount).toBe(2);
-    expect(renders.frames).toMatchObject([
-      {
-        ...mocks[0].result,
-        networkStatus: NetworkStatus.ready,
-        error: undefined,
-      },
-      {
-        ...mocks[1].result,
-        networkStatus: NetworkStatus.ready,
-        error: undefined,
-      },
-    ]);
+    await expect(takeRender).not.toRerender();
   });
 
   it("suspends and fetches data from new client when changing clients", async () => {
@@ -1239,8 +1173,9 @@ describe("useSuspenseQuery", () => {
     );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: { greeting: "Hello client 1" },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -1249,8 +1184,9 @@ describe("useSuspenseQuery", () => {
     await rerenderAsync({ client: client2 });
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: { greeting: "Hello client 2" },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -1258,14 +1194,16 @@ describe("useSuspenseQuery", () => {
 
     expect(renders.count).toBe(4 + (IS_REACT_19 ? renders.suspenseCount : 0));
     expect(renders.suspenseCount).toBe(2);
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
         data: { greeting: "Hello client 1" },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
       {
         data: { greeting: "Hello client 2" },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -1414,8 +1352,9 @@ describe("useSuspenseQuery", () => {
     );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: { greeting: "Hello first fetch" },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -1424,8 +1363,9 @@ describe("useSuspenseQuery", () => {
     await rerenderAsync({ queryKey: ["second"] });
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: { greeting: "Hello second fetch" },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -1433,14 +1373,16 @@ describe("useSuspenseQuery", () => {
 
     expect(renders.count).toBe(4 + (IS_REACT_19 ? renders.suspenseCount : 0));
     expect(renders.suspenseCount).toBe(2);
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
         data: { greeting: "Hello first fetch" },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
       {
         data: { greeting: "Hello second fetch" },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -1471,8 +1413,9 @@ describe("useSuspenseQuery", () => {
     );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: { greeting: "Hello first fetch" },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -1481,8 +1424,9 @@ describe("useSuspenseQuery", () => {
     await rerenderAsync({ queryKey: ["greeting", 2] });
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: { greeting: "Hello second fetch" },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -1490,14 +1434,16 @@ describe("useSuspenseQuery", () => {
 
     expect(renders.count).toBe(4 + (IS_REACT_19 ? renders.suspenseCount : 0));
     expect(renders.suspenseCount).toBe(2);
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
         data: { greeting: "Hello first fetch" },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
       {
         data: { greeting: "Hello second fetch" },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -1528,8 +1474,9 @@ describe("useSuspenseQuery", () => {
     );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: { greeting: "Hello first fetch" },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -1538,8 +1485,9 @@ describe("useSuspenseQuery", () => {
     await rerenderAsync({ queryKey: "second" });
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: { greeting: "Hello second fetch" },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -1547,14 +1495,16 @@ describe("useSuspenseQuery", () => {
 
     expect(renders.count).toBe(4 + (IS_REACT_19 ? renders.suspenseCount : 0));
     expect(renders.suspenseCount).toBe(2);
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
         data: { greeting: "Hello first fetch" },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
       {
         data: { greeting: "Hello second fetch" },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -1585,8 +1535,9 @@ describe("useSuspenseQuery", () => {
     );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: { greeting: "Hello first fetch" },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -1595,8 +1546,9 @@ describe("useSuspenseQuery", () => {
     await rerenderAsync({ queryKey: 2 });
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: { greeting: "Hello second fetch" },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -1604,14 +1556,16 @@ describe("useSuspenseQuery", () => {
 
     expect(renders.count).toBe(4 + (IS_REACT_19 ? renders.suspenseCount : 0));
     expect(renders.suspenseCount).toBe(2);
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
         data: { greeting: "Hello first fetch" },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
       {
         data: { greeting: "Hello second fetch" },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -1626,28 +1580,49 @@ describe("useSuspenseQuery", () => {
       link: new MockLink(mocks),
     });
 
-    const { result, rerenderAsync, renders } = await renderSuspenseHook(
+    using _disabledAct = disableActEnvironment();
+    const { rerender, takeRender } = await renderUseSuspenseQuery(
       ({ id }) => useSuspenseQuery(query, { variables: { id } }),
-      { client, initialProps: { id: "1" } }
+      { wrapper: createClientWrapper(client), initialProps: { id: "1" } }
     );
 
-    await waitFor(() => {
-      expect(result.current).toMatchObject({
+    {
+      const { renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["<Suspense />"]);
+    }
+
+    {
+      const { snapshot, renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["useSuspenseQuery"]);
+      expect(snapshot).toStrictEqualTyped({
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
-    });
+    }
 
-    await rerenderAsync({ id: "2" });
+    await rerender({ id: "2" });
 
-    await waitFor(() => {
-      expect(result.current).toMatchObject({
+    {
+      const { renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["<Suspense />"]);
+    }
+
+    {
+      const { snapshot, renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["useSuspenseQuery"]);
+      expect(snapshot).toStrictEqualTyped({
         ...mocks[1].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
-    });
+    }
 
     client.writeQuery({
       query,
@@ -1655,92 +1630,87 @@ describe("useSuspenseQuery", () => {
       data: { character: { id: "2", name: "Cached hero" } },
     });
 
-    await waitFor(() => {
-      expect(result.current).toMatchObject({
+    {
+      const { snapshot, renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["useSuspenseQuery"]);
+      expect(snapshot).toStrictEqualTyped({
         data: { character: { id: "2", name: "Cached hero" } },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
-    });
+    }
 
-    expect(renders.suspenseCount).toBe(2);
-    expect(renders.count).toBe(5 + (IS_REACT_19 ? renders.suspenseCount : 0));
-    expect(renders.frames).toMatchObject([
-      {
-        ...mocks[0].result,
-        networkStatus: NetworkStatus.ready,
-        error: undefined,
-      },
-      {
-        ...mocks[1].result,
-        networkStatus: NetworkStatus.ready,
-        error: undefined,
-      },
-      {
-        data: { character: { id: "2", name: "Cached hero" } },
-        networkStatus: NetworkStatus.ready,
-        error: undefined,
-      },
-    ]);
+    await expect(takeRender).not.toRerender();
   });
 
   it("uses cached result and does not suspend when switching back to already used variables while using `cache-first` fetch policy", async () => {
     const { query, mocks } = useVariablesQueryCase();
 
-    const { result, rerenderAsync, renders } = await renderSuspenseHook(
+    using _disabledAct = disableActEnvironment();
+    const { rerender, takeRender } = await renderUseSuspenseQuery(
       ({ id }) =>
         useSuspenseQuery(query, {
           fetchPolicy: "cache-first",
           variables: { id },
         }),
-      { mocks, initialProps: { id: "1" } }
+      { wrapper: createMockWrapper({ mocks }), initialProps: { id: "1" } }
     );
 
-    await waitFor(() => {
-      expect(result.current).toMatchObject({
+    {
+      const { renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["<Suspense />"]);
+    }
+
+    {
+      const { snapshot, renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["useSuspenseQuery"]);
+      expect(snapshot).toStrictEqualTyped({
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
-    });
+    }
 
-    await rerenderAsync({ id: "2" });
+    await rerender({ id: "2" });
 
-    await waitFor(() => {
-      expect(result.current).toMatchObject({
+    {
+      const { renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["<Suspense />"]);
+    }
+
+    {
+      const { snapshot, renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["useSuspenseQuery"]);
+      expect(snapshot).toStrictEqualTyped({
         ...mocks[1].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
-    });
+    }
 
-    await rerenderAsync({ id: "1" });
+    await rerender({ id: "1" });
 
-    expect(result.current).toMatchObject({
-      ...mocks[0].result,
-      networkStatus: NetworkStatus.ready,
-      error: undefined,
-    });
+    {
+      const { snapshot, renderedComponents } = await takeRender();
 
-    expect(renders.count).toBe(5 + (IS_REACT_19 ? renders.suspenseCount : 0));
-    expect(renders.suspenseCount).toBe(2);
-    expect(renders.frames).toMatchObject([
-      {
+      expect(renderedComponents).toStrictEqual(["useSuspenseQuery"]);
+      expect(snapshot).toStrictEqualTyped({
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
-      },
-      {
-        ...mocks[1].result,
-        networkStatus: NetworkStatus.ready,
-        error: undefined,
-      },
-      {
-        ...mocks[0].result,
-        networkStatus: NetworkStatus.ready,
-        error: undefined,
-      },
-    ]);
+      });
+    }
+
+    await expect(takeRender).not.toRerender();
   });
 
   it("uses cached result with network request and does not suspend when switching back to already used variables while using `cache-and-network` fetch policy", async () => {
@@ -1762,7 +1732,7 @@ describe("useSuspenseQuery", () => {
             character: { __typename: "Character", id: "1", name: "Spider-Man" },
           },
         },
-        delay: 20,
+        delay: 200,
       },
       {
         request: { query, variables: { id: "2" } },
@@ -1775,7 +1745,7 @@ describe("useSuspenseQuery", () => {
             },
           },
         },
-        delay: 20,
+        delay: 200,
       },
       {
         request: { query, variables: { id: "1" } },
@@ -1788,77 +1758,85 @@ describe("useSuspenseQuery", () => {
             },
           },
         },
-        delay: 20,
+        delay: 200,
       },
     ];
 
-    const { result, rerenderAsync, renders } = await renderSuspenseHook(
+    using _disabledAct = disableActEnvironment();
+    const { rerender, takeRender } = await renderUseSuspenseQuery(
       ({ id }) =>
         useSuspenseQuery(query, {
           fetchPolicy: "cache-and-network",
           variables: { id },
         }),
-      { mocks, initialProps: { id: "1" } }
+      { wrapper: createMockWrapper({ mocks }), initialProps: { id: "1" } }
     );
 
-    await waitFor(() => {
-      expect(result.current).toMatchObject({
+    {
+      const { renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["<Suspense />"]);
+    }
+
+    {
+      const { snapshot, renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["useSuspenseQuery"]);
+      expect(snapshot).toStrictEqualTyped({
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
-    });
+    }
 
-    await rerenderAsync({ id: "2" });
+    await rerender({ id: "2" });
 
-    await waitFor(() => {
-      expect(result.current).toMatchObject({
+    {
+      const { renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["<Suspense />"]);
+    }
+
+    {
+      const { snapshot, renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["useSuspenseQuery"]);
+      expect(snapshot).toStrictEqualTyped({
         ...mocks[1].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
-    });
+    }
 
-    await rerenderAsync({ id: "1" });
+    await rerender({ id: "1" });
 
-    expect(result.current).toMatchObject({
-      ...mocks[0].result,
-      networkStatus: NetworkStatus.loading,
-      error: undefined,
-    });
+    {
+      const { snapshot, renderedComponents } = await takeRender();
 
-    await waitFor(() => {
-      expect(result.current).toMatchObject({
-        ...mocks[2].result,
-        networkStatus: NetworkStatus.ready,
-        error: undefined,
-      });
-    });
-
-    expect(renders.count).toBe(6 + (IS_REACT_19 ? renders.suspenseCount : 0));
-    expect(renders.suspenseCount).toBe(2);
-    expect(renders.frames).toMatchObject([
-      {
+      expect(renderedComponents).toStrictEqual(["useSuspenseQuery"]);
+      expect(snapshot).toStrictEqualTyped({
         ...mocks[0].result,
-        networkStatus: NetworkStatus.ready,
-        error: undefined,
-      },
-      {
-        ...mocks[1].result,
-        networkStatus: NetworkStatus.ready,
-        error: undefined,
-      },
-      {
-        ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.loading,
         error: undefined,
-      },
-      {
+      });
+    }
+
+    {
+      const { snapshot, renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["useSuspenseQuery"]);
+      expect(snapshot).toStrictEqualTyped({
         ...mocks[2].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
-      },
-    ]);
+      });
+    }
+
+    await expect(takeRender).not.toRerender();
   });
 
   it("refetches and suspends when switching back to already used variables while using `network-only` fetch policy", async () => {
@@ -1880,7 +1858,7 @@ describe("useSuspenseQuery", () => {
             character: { __typename: "Character", id: "1", name: "Spider-Man" },
           },
         },
-        delay: 20,
+        delay: 200,
       },
       {
         request: { query, variables: { id: "2" } },
@@ -1893,7 +1871,7 @@ describe("useSuspenseQuery", () => {
             },
           },
         },
-        delay: 20,
+        delay: 200,
       },
       {
         request: { query, variables: { id: "1" } },
@@ -1906,66 +1884,79 @@ describe("useSuspenseQuery", () => {
             },
           },
         },
-        delay: 20,
+        delay: 200,
       },
     ];
 
-    const { result, rerenderAsync, renders } = await renderSuspenseHook(
+    using _disabledAct = disableActEnvironment();
+    const { rerender, takeRender } = await renderUseSuspenseQuery(
       ({ id }) =>
         useSuspenseQuery(query, {
           fetchPolicy: "network-only",
           variables: { id },
         }),
-      { mocks, initialProps: { id: "1" } }
+      { wrapper: createMockWrapper({ mocks }), initialProps: { id: "1" } }
     );
 
-    await waitFor(() => {
-      expect(result.current).toMatchObject({
+    {
+      const { renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["<Suspense />"]);
+    }
+
+    {
+      const { snapshot, renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["useSuspenseQuery"]);
+      expect(snapshot).toStrictEqualTyped({
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
-    });
+    }
 
-    await rerenderAsync({ id: "2" });
+    await rerender({ id: "2" });
 
-    await waitFor(() => {
-      expect(result.current).toMatchObject({
+    {
+      const { renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["<Suspense />"]);
+    }
+
+    {
+      const { snapshot, renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["useSuspenseQuery"]);
+      expect(snapshot).toStrictEqualTyped({
         ...mocks[1].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
-    });
+    }
 
-    await rerenderAsync({ id: "1" });
+    await rerender({ id: "1" });
 
-    await waitFor(() => {
-      expect(result.current).toMatchObject({
+    {
+      const { renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["<Suspense />"]);
+    }
+
+    {
+      const { snapshot, renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["useSuspenseQuery"]);
+      expect(snapshot).toStrictEqualTyped({
         ...mocks[2].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
-    });
+    }
 
-    expect(renders.count).toBe(6 + (IS_REACT_19 ? renders.suspenseCount : 0));
-    expect(renders.suspenseCount).toBe(3);
-    expect(renders.frames).toMatchObject([
-      {
-        ...mocks[0].result,
-        networkStatus: NetworkStatus.ready,
-        error: undefined,
-      },
-      {
-        ...mocks[1].result,
-        networkStatus: NetworkStatus.ready,
-        error: undefined,
-      },
-      {
-        ...mocks[2].result,
-        networkStatus: NetworkStatus.ready,
-        error: undefined,
-      },
-    ]);
+    await expect(takeRender).not.toRerender();
   });
 
   it("refetches and suspends when switching back to already used variables while using `no-cache` fetch policy", async () => {
@@ -1987,7 +1978,7 @@ describe("useSuspenseQuery", () => {
             character: { __typename: "Character", id: "1", name: "Spider-Man" },
           },
         },
-        delay: 20,
+        delay: 200,
       },
       {
         request: { query, variables: { id: "2" } },
@@ -2000,7 +1991,7 @@ describe("useSuspenseQuery", () => {
             },
           },
         },
-        delay: 20,
+        delay: 200,
       },
       {
         request: { query, variables: { id: "1" } },
@@ -2013,66 +2004,79 @@ describe("useSuspenseQuery", () => {
             },
           },
         },
-        delay: 20,
+        delay: 200,
       },
     ];
 
-    const { result, rerenderAsync, renders } = await renderSuspenseHook(
+    using _disabledAct = disableActEnvironment();
+    const { rerender, takeRender } = await renderUseSuspenseQuery(
       ({ id }) =>
         useSuspenseQuery(query, {
           fetchPolicy: "no-cache",
           variables: { id },
         }),
-      { mocks, initialProps: { id: "1" } }
+      { wrapper: createMockWrapper({ mocks }), initialProps: { id: "1" } }
     );
 
-    await waitFor(() => {
-      expect(result.current).toMatchObject({
+    {
+      const { renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["<Suspense />"]);
+    }
+
+    {
+      const { snapshot, renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["useSuspenseQuery"]);
+      expect(snapshot).toStrictEqualTyped({
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
-    });
+    }
 
-    await rerenderAsync({ id: "2" });
+    await rerender({ id: "2" });
 
-    await waitFor(() => {
-      expect(result.current).toMatchObject({
+    {
+      const { renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["<Suspense />"]);
+    }
+
+    {
+      const { snapshot, renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["useSuspenseQuery"]);
+      expect(snapshot).toStrictEqualTyped({
         ...mocks[1].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
-    });
+    }
 
-    await rerenderAsync({ id: "1" });
+    await rerender({ id: "1" });
 
-    await waitFor(() => {
-      expect(result.current).toMatchObject({
+    {
+      const { renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["<Suspense />"]);
+    }
+
+    {
+      const { snapshot, renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["useSuspenseQuery"]);
+      expect(snapshot).toStrictEqualTyped({
         ...mocks[2].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
-    });
+    }
 
-    expect(renders.count).toBe(6 + (IS_REACT_19 ? renders.suspenseCount : 0));
-    expect(renders.suspenseCount).toBe(3);
-    expect(renders.frames).toMatchObject([
-      {
-        ...mocks[0].result,
-        networkStatus: NetworkStatus.ready,
-        error: undefined,
-      },
-      {
-        ...mocks[1].result,
-        networkStatus: NetworkStatus.ready,
-        error: undefined,
-      },
-      {
-        ...mocks[2].result,
-        networkStatus: NetworkStatus.ready,
-        error: undefined,
-      },
-    ]);
+    await expect(takeRender).not.toRerender();
   });
 
   it("responds to cache updates after changing back to already fetched variables", async () => {
@@ -2083,38 +2087,63 @@ describe("useSuspenseQuery", () => {
       link: new MockLink(mocks),
     });
 
-    const { result, rerenderAsync, renders } = await renderSuspenseHook(
+    using _disabledAct = disableActEnvironment();
+    const { rerender, takeRender } = await renderUseSuspenseQuery(
       ({ id }) => useSuspenseQuery(query, { variables: { id } }),
-      { client, initialProps: { id: "1" } }
+      { wrapper: createClientWrapper(client), initialProps: { id: "1" } }
     );
 
-    await waitFor(() => {
-      expect(result.current).toMatchObject({
+    {
+      const { renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["<Suspense />"]);
+    }
+
+    {
+      const { snapshot, renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["useSuspenseQuery"]);
+      expect(snapshot).toStrictEqualTyped({
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
-    });
+    }
 
-    await rerenderAsync({ id: "2" });
+    await rerender({ id: "2" });
 
-    await waitFor(() => {
-      expect(result.current).toMatchObject({
+    {
+      const { renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["<Suspense />"]);
+    }
+
+    {
+      const { snapshot, renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["useSuspenseQuery"]);
+      expect(snapshot).toStrictEqualTyped({
         ...mocks[1].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
-    });
+    }
 
-    await rerenderAsync({ id: "1" });
+    await rerender({ id: "1" });
 
-    await waitFor(() => {
-      expect(result.current).toMatchObject({
+    {
+      const { snapshot, renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["useSuspenseQuery"]);
+      expect(snapshot).toStrictEqualTyped({
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
-    });
+    }
 
     client.writeQuery({
       query,
@@ -2122,38 +2151,19 @@ describe("useSuspenseQuery", () => {
       data: { character: { id: "1", name: "Cached hero" } },
     });
 
-    await waitFor(() => {
-      expect(result.current).toMatchObject({
+    {
+      const { snapshot, renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["useSuspenseQuery"]);
+      expect(snapshot).toStrictEqualTyped({
         data: { character: { id: "1", name: "Cached hero" } },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
-    });
+    }
 
-    expect(renders.suspenseCount).toBe(2);
-    expect(renders.count).toBe(6 + (IS_REACT_19 ? renders.suspenseCount : 0));
-    expect(renders.frames).toMatchObject([
-      {
-        ...mocks[0].result,
-        networkStatus: NetworkStatus.ready,
-        error: undefined,
-      },
-      {
-        ...mocks[1].result,
-        networkStatus: NetworkStatus.ready,
-        error: undefined,
-      },
-      {
-        ...mocks[0].result,
-        networkStatus: NetworkStatus.ready,
-        error: undefined,
-      },
-      {
-        data: { character: { id: "1", name: "Cached hero" } },
-        networkStatus: NetworkStatus.ready,
-        error: undefined,
-      },
-    ]);
+    await expect(takeRender).not.toRerender();
   });
 
   it('does not suspend when data is in the cache and using a "cache-first" fetch policy', async () => {
@@ -2171,17 +2181,19 @@ describe("useSuspenseQuery", () => {
       { cache, mocks }
     );
 
-    expect(result.current).toMatchObject({
+    expect(result.current).toStrictEqualTyped({
       data: { greeting: "hello from cache" },
+      dataState: "complete",
       networkStatus: NetworkStatus.ready,
       error: undefined,
     });
 
     expect(renders.count).toBe(1 + (IS_REACT_19 ? renders.suspenseCount : 0));
     expect(renders.suspenseCount).toBe(0);
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
         data: { greeting: "hello from cache" },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -2257,8 +2269,9 @@ describe("useSuspenseQuery", () => {
     );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -2266,9 +2279,10 @@ describe("useSuspenseQuery", () => {
 
     expect(renders.count).toBe(2 + (IS_REACT_19 ? renders.suspenseCount : 0));
     expect(renders.suspenseCount).toBe(1);
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -2318,15 +2332,17 @@ describe("useSuspenseQuery", () => {
     );
 
     expect(renders.suspenseCount).toBe(0);
-    expect(result.current).toMatchObject({
+    expect(result.current).toStrictEqualTyped({
       data: { character: { id: "1" } },
+      dataState: "partial",
       networkStatus: NetworkStatus.loading,
       error: undefined,
     });
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -2334,14 +2350,16 @@ describe("useSuspenseQuery", () => {
 
     expect(renders.count).toBe(2 + (IS_REACT_19 ? renders.suspenseCount : 0));
     expect(renders.suspenseCount).toBe(0);
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
         data: { character: { id: "1" } },
+        dataState: "partial",
         networkStatus: NetworkStatus.loading,
         error: undefined,
       },
       {
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -2367,60 +2385,65 @@ describe("useSuspenseQuery", () => {
       variables: { id: "1" },
     });
 
-    const { result, renders, rerenderAsync } = await renderSuspenseHook(
+    using _disabledAct = disableActEnvironment();
+    const { rerender, takeRender } = await renderUseSuspenseQuery(
       ({ id }) =>
         useSuspenseQuery(fullQuery, {
           fetchPolicy: "cache-first",
           returnPartialData: true,
           variables: { id },
         }),
-      { cache, mocks, initialProps: { id: "1" } }
+      {
+        wrapper: createMockWrapper({ cache, mocks }),
+        initialProps: { id: "1" },
+      }
     );
 
-    expect(renders.suspenseCount).toBe(0);
-    expect(result.current).toMatchObject({
-      data: { character: { id: "1" } },
-      networkStatus: NetworkStatus.loading,
-      error: undefined,
-    });
+    {
+      const { snapshot, renderedComponents } = await takeRender();
 
-    await waitFor(() => {
-      expect(result.current).toMatchObject({
-        ...mocks[0].result,
-        networkStatus: NetworkStatus.ready,
-        error: undefined,
-      });
-    });
-
-    await rerenderAsync({ id: "2" });
-
-    await waitFor(() => {
-      expect(result.current).toMatchObject({
-        ...mocks[1].result,
-        networkStatus: NetworkStatus.ready,
-        error: undefined,
-      });
-    });
-
-    expect(renders.count).toBe(4 + (IS_REACT_19 ? renders.suspenseCount : 0));
-    expect(renders.suspenseCount).toBe(1);
-    expect(renders.frames).toMatchObject([
-      {
+      expect(renderedComponents).toStrictEqual(["useSuspenseQuery"]);
+      expect(snapshot).toStrictEqualTyped({
         data: { character: { id: "1" } },
+        dataState: "partial",
         networkStatus: NetworkStatus.loading,
         error: undefined,
-      },
-      {
+      });
+    }
+
+    {
+      const { snapshot, renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["useSuspenseQuery"]);
+      expect(snapshot).toStrictEqualTyped({
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
-      },
-      {
+      });
+    }
+
+    await rerender({ id: "2" });
+
+    {
+      const { renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["<Suspense />"]);
+    }
+
+    {
+      const { snapshot, renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["useSuspenseQuery"]);
+      expect(snapshot).toStrictEqualTyped({
         ...mocks[1].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
-      },
-    ]);
+      });
+    }
+
+    await expect(takeRender).not.toRerender();
   });
 
   it('suspends when data is in the cache and using a "network-only" fetch policy', async () => {
@@ -2439,8 +2462,9 @@ describe("useSuspenseQuery", () => {
     );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -2448,9 +2472,10 @@ describe("useSuspenseQuery", () => {
 
     expect(renders.count).toBe(2 + (IS_REACT_19 ? renders.suspenseCount : 0));
     expect(renders.suspenseCount).toBe(1);
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
         data: { greeting: "Hello" },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -2502,8 +2527,9 @@ describe("useSuspenseQuery", () => {
     expect(renders.suspenseCount).toBe(1);
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -2511,9 +2537,10 @@ describe("useSuspenseQuery", () => {
 
     expect(renders.count).toBe(2 + (IS_REACT_19 ? renders.suspenseCount : 0));
     expect(renders.suspenseCount).toBe(1);
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -2536,8 +2563,9 @@ describe("useSuspenseQuery", () => {
     );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -2547,9 +2575,10 @@ describe("useSuspenseQuery", () => {
 
     expect(renders.count).toBe(2 + (IS_REACT_19 ? renders.suspenseCount : 0));
     expect(renders.suspenseCount).toBe(1);
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
         data: { greeting: "Hello" },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -2568,8 +2597,9 @@ describe("useSuspenseQuery", () => {
     );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -2577,9 +2607,10 @@ describe("useSuspenseQuery", () => {
 
     expect(renders.count).toBe(2 + (IS_REACT_19 ? renders.suspenseCount : 0));
     expect(renders.suspenseCount).toBe(1);
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
         data: { greeting: "Hello" },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -2587,21 +2618,24 @@ describe("useSuspenseQuery", () => {
 
     await rerenderAsync();
 
-    expect(result.current).toMatchObject({
+    expect(result.current).toStrictEqualTyped({
       ...mocks[0].result,
+      dataState: "complete",
       networkStatus: NetworkStatus.ready,
       error: undefined,
     });
     expect(renders.count).toBe(3 + (IS_REACT_19 ? renders.suspenseCount : 0));
     expect(renders.suspenseCount).toBe(1);
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
         data: { greeting: "Hello" },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
       {
         data: { greeting: "Hello" },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -2655,8 +2689,9 @@ describe("useSuspenseQuery", () => {
     expect(renders.suspenseCount).toBe(1);
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -2664,9 +2699,10 @@ describe("useSuspenseQuery", () => {
 
     expect(renders.count).toBe(2 + (IS_REACT_19 ? renders.suspenseCount : 0));
     expect(renders.suspenseCount).toBe(1);
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -2708,15 +2744,17 @@ describe("useSuspenseQuery", () => {
       { cache, mocks }
     );
 
-    expect(result.current).toMatchObject({
+    expect(result.current).toStrictEqualTyped({
       data: { greeting: "hello from cache" },
+      dataState: "complete",
       networkStatus: NetworkStatus.loading,
       error: undefined,
     });
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -2724,14 +2762,16 @@ describe("useSuspenseQuery", () => {
 
     expect(renders.count).toBe(2 + (IS_REACT_19 ? renders.suspenseCount : 0));
     expect(renders.suspenseCount).toBe(0);
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
         data: { greeting: "hello from cache" },
+        dataState: "complete",
         networkStatus: NetworkStatus.loading,
         error: undefined,
       },
       {
         data: { greeting: "Hello" },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -2781,15 +2821,17 @@ describe("useSuspenseQuery", () => {
     );
 
     expect(renders.suspenseCount).toBe(0);
-    expect(result.current).toMatchObject({
+    expect(result.current).toStrictEqualTyped({
       data: { character: { id: "1" } },
+      dataState: "partial",
       networkStatus: NetworkStatus.loading,
       error: undefined,
     });
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -2797,14 +2839,16 @@ describe("useSuspenseQuery", () => {
 
     expect(renders.count).toBe(2 + (IS_REACT_19 ? renders.suspenseCount : 0));
     expect(renders.suspenseCount).toBe(0);
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
         data: { character: { id: "1" } },
+        dataState: "partial",
         networkStatus: NetworkStatus.loading,
         error: undefined,
       },
       {
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -2830,63 +2874,68 @@ describe("useSuspenseQuery", () => {
       variables: { id: "1" },
     });
 
-    const { result, renders, rerenderAsync } = await renderSuspenseHook(
+    using _disabledAct = disableActEnvironment();
+    const { rerender, takeRender } = await renderUseSuspenseQuery(
       ({ id }) =>
         useSuspenseQuery(fullQuery, {
           fetchPolicy: "cache-and-network",
           returnPartialData: true,
           variables: { id },
         }),
-      { cache, mocks, initialProps: { id: "1" } }
+      {
+        wrapper: createMockWrapper({ cache, mocks }),
+        initialProps: { id: "1" },
+      }
     );
 
-    expect(renders.suspenseCount).toBe(0);
-    expect(result.current).toMatchObject({
-      data: { character: { id: "1" } },
-      networkStatus: NetworkStatus.loading,
-      error: undefined,
-    });
+    {
+      const { snapshot, renderedComponents } = await takeRender();
 
-    await waitFor(() => {
-      expect(result.current).toMatchObject({
-        ...mocks[0].result,
-        networkStatus: NetworkStatus.ready,
-        error: undefined,
-      });
-    });
-
-    await rerenderAsync({ id: "2" });
-
-    await waitFor(() => {
-      expect(result.current).toMatchObject({
-        ...mocks[1].result,
-        networkStatus: NetworkStatus.ready,
-        error: undefined,
-      });
-    });
-
-    expect(renders.count).toBe(4 + (IS_REACT_19 ? renders.suspenseCount : 0));
-    expect(renders.suspenseCount).toBe(1);
-    expect(renders.frames).toMatchObject([
-      {
+      expect(renderedComponents).toStrictEqual(["useSuspenseQuery"]);
+      expect(snapshot).toStrictEqualTyped({
         data: { character: { id: "1" } },
+        dataState: "partial",
         networkStatus: NetworkStatus.loading,
         error: undefined,
-      },
-      {
+      });
+    }
+
+    {
+      const { snapshot, renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["useSuspenseQuery"]);
+      expect(snapshot).toStrictEqualTyped({
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
-      },
-      {
+      });
+    }
+
+    await rerender({ id: "2" });
+
+    {
+      const { renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["<Suspense />"]);
+    }
+
+    {
+      const { snapshot, renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["useSuspenseQuery"]);
+      expect(snapshot).toStrictEqualTyped({
         ...mocks[1].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
-      },
-    ]);
+      });
+    }
+
+    await expect(takeRender).not.toRerender();
   });
 
-  it.each<SuspenseQueryHookFetchPolicy>([
+  it.each<useSuspenseQuery.FetchPolicy>([
     "cache-first",
     "network-only",
     "cache-and-network",
@@ -2932,7 +2981,7 @@ describe("useSuspenseQuery", () => {
     expect(cachedData).toBeNull();
   });
 
-  it.each<SuspenseQueryHookFetchPolicy>([
+  it.each<useSuspenseQuery.FetchPolicy>([
     "cache-first",
     "network-only",
     "cache-and-network",
@@ -2955,28 +3004,33 @@ describe("useSuspenseQuery", () => {
         expect(result.current.data).toEqual(mocks[0].result.data);
       });
 
-      client.writeQuery({
-        query,
-        data: { greeting: "Updated hello" },
+      act(() => {
+        client.writeQuery({
+          query,
+          data: { greeting: "Updated hello" },
+        });
       });
 
       await waitFor(() => {
-        expect(result.current).toMatchObject({
+        expect(result.current).toStrictEqualTyped({
           data: { greeting: "Updated hello" },
+          dataState: "complete",
           networkStatus: NetworkStatus.ready,
           error: undefined,
         });
       });
       expect(renders.suspenseCount).toBe(1);
       expect(renders.count).toBe(3 + (IS_REACT_19 ? renders.suspenseCount : 0));
-      expect(renders.frames).toMatchObject([
+      expect(renders.frames).toStrictEqualTyped([
         {
           ...mocks[0].result,
+          dataState: "complete",
           networkStatus: NetworkStatus.ready,
           error: undefined,
         },
         {
           data: { greeting: "Updated hello" },
+          dataState: "complete",
           networkStatus: NetworkStatus.ready,
           error: undefined,
         },
@@ -3009,23 +3063,25 @@ describe("useSuspenseQuery", () => {
     // Wait for a while to ensure no updates happen asynchronously
     await wait(100);
 
-    expect(result.current).toMatchObject({
+    expect(result.current).toStrictEqualTyped({
       ...mocks[0].result,
+      dataState: "complete",
       networkStatus: NetworkStatus.ready,
       error: undefined,
     });
     expect(renders.suspenseCount).toBe(1);
     expect(renders.count).toBe(2 + (IS_REACT_19 ? renders.suspenseCount : 0));
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
     ]);
   });
 
-  it.each<SuspenseQueryHookFetchPolicy>([
+  it.each<useSuspenseQuery.FetchPolicy>([
     "cache-first",
     "network-only",
     "no-cache",
@@ -3035,52 +3091,55 @@ describe("useSuspenseQuery", () => {
     async (fetchPolicy) => {
       const { query, mocks } = useVariablesQueryCase();
 
-      const { result, rerenderAsync, renders } = await renderSuspenseHook(
+      using _disabledAct = disableActEnvironment();
+      const { takeRender, rerender } = await renderUseSuspenseQuery(
         ({ id }) => useSuspenseQuery(query, { fetchPolicy, variables: { id } }),
-        { mocks, initialProps: { id: "1" } }
+        { wrapper: createMockWrapper({ mocks }), initialProps: { id: "1" } }
       );
 
-      expect(renders.suspenseCount).toBe(1);
-      await waitFor(() => {
-        expect(result.current).toMatchObject({
+      {
+        const { renderedComponents } = await takeRender();
+
+        expect(renderedComponents).toStrictEqual(["<Suspense />"]);
+      }
+
+      {
+        const { snapshot, renderedComponents } = await takeRender();
+
+        expect(renderedComponents).toStrictEqual(["useSuspenseQuery"]);
+        expect(snapshot).toStrictEqualTyped({
           ...mocks[0].result,
+          dataState: "complete",
+          networkStatus: NetworkStatus.ready,
           error: undefined,
         });
-      });
+      }
 
-      await rerenderAsync({ id: "2" });
+      await rerender({ id: "2" });
 
-      await waitFor(() => {
-        expect(result.current).toMatchObject({
+      {
+        const { renderedComponents } = await takeRender();
+
+        expect(renderedComponents).toStrictEqual(["<Suspense />"]);
+      }
+
+      {
+        const { snapshot, renderedComponents } = await takeRender();
+
+        expect(renderedComponents).toStrictEqual(["useSuspenseQuery"]);
+        expect(snapshot).toStrictEqualTyped({
           ...mocks[1].result,
+          dataState: "complete",
           networkStatus: NetworkStatus.ready,
           error: undefined,
         });
-      });
+      }
 
-      // Renders:
-      // 1. Initiate fetch and suspend
-      // 2. Unsuspend and return results from initial fetch
-      // 3. Change variables and suspend
-      // 5. Unsuspend and return results from refetch
-      expect(renders.count).toBe(4 + (IS_REACT_19 ? renders.suspenseCount : 0));
-      expect(renders.suspenseCount).toBe(2);
-      expect(renders.frames).toMatchObject([
-        {
-          ...mocks[0].result,
-          networkStatus: NetworkStatus.ready,
-          error: undefined,
-        },
-        {
-          ...mocks[1].result,
-          networkStatus: NetworkStatus.ready,
-          error: undefined,
-        },
-      ]);
+      await expect(takeRender).not.toRerender();
     }
   );
 
-  it.each<SuspenseQueryHookFetchPolicy>([
+  it.each<useSuspenseQuery.FetchPolicy>([
     "cache-first",
     "network-only",
     "no-cache",
@@ -3120,8 +3179,9 @@ describe("useSuspenseQuery", () => {
 
       expect(renders.suspenseCount).toBe(1);
       await waitFor(() => {
-        expect(result.current).toMatchObject({
+        expect(result.current).toStrictEqualTyped({
           ...mocks[0].result,
+          dataState: "complete",
           networkStatus: NetworkStatus.ready,
           error: undefined,
         });
@@ -3130,8 +3190,9 @@ describe("useSuspenseQuery", () => {
       await rerenderAsync({ query: query2 });
 
       await waitFor(() => {
-        expect(result.current).toMatchObject({
+        expect(result.current).toStrictEqualTyped({
           ...mocks[1].result,
+          dataState: "complete",
           networkStatus: NetworkStatus.ready,
           error: undefined,
         });
@@ -3144,14 +3205,16 @@ describe("useSuspenseQuery", () => {
       // 5. Unsuspend and return results from refetch
       expect(renders.count).toBe(4 + (IS_REACT_19 ? renders.suspenseCount : 0));
       expect(renders.suspenseCount).toBe(2);
-      expect(renders.frames).toMatchObject([
+      expect(renders.frames).toStrictEqualTyped([
         {
           ...mocks[0].result,
+          dataState: "complete",
           networkStatus: NetworkStatus.ready,
           error: undefined,
         },
         {
           ...mocks[1].result,
+          dataState: "complete",
           networkStatus: NetworkStatus.ready,
           error: undefined,
         },
@@ -3159,7 +3222,7 @@ describe("useSuspenseQuery", () => {
     }
   );
 
-  it.each<SuspenseQueryHookFetchPolicy>([
+  it.each<useSuspenseQuery.FetchPolicy>([
     "cache-first",
     "network-only",
     "no-cache",
@@ -3209,7 +3272,7 @@ describe("useSuspenseQuery", () => {
     }
   );
 
-  it.each<SuspenseQueryHookFetchPolicy>([
+  it.each<useSuspenseQuery.FetchPolicy>([
     "cache-first",
     "network-only",
     "no-cache",
@@ -3256,7 +3319,7 @@ describe("useSuspenseQuery", () => {
     }
   );
 
-  it.each<SuspenseQueryHookFetchPolicy>([
+  it.each<useSuspenseQuery.FetchPolicy>([
     "cache-first",
     "network-only",
     "cache-and-network",
@@ -3279,14 +3342,17 @@ describe("useSuspenseQuery", () => {
         expect(result.current.data).toEqual(mocks[0].result.data);
       });
 
-      client.writeQuery({
-        query,
-        data: { greeting: "Updated hello" },
+      act(() => {
+        client.writeQuery({
+          query,
+          data: { greeting: "Updated hello" },
+        });
       });
 
       await waitFor(() => {
-        expect(result.current).toMatchObject({
+        expect(result.current).toStrictEqualTyped({
           data: { greeting: "Updated hello" },
+          dataState: "complete",
           networkStatus: NetworkStatus.ready,
           error: undefined,
         });
@@ -3322,14 +3388,18 @@ describe("useSuspenseQuery", () => {
     // updated value.
     await wait(0);
 
-    client.writeQuery({
-      query,
-      data: { greeting: "Updated hello" },
+    act(() => {
+      client.writeQuery({
+        query,
+        data: { greeting: "Updated hello" },
+      });
     });
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: { greeting: "Updated hello" },
+        dataState: "complete",
+        networkStatus: NetworkStatus.ready,
         error: undefined,
       });
     });
@@ -3363,9 +3433,10 @@ describe("useSuspenseQuery", () => {
 
     expect(renders.count).toBe(2 + (IS_REACT_19 ? renders.suspenseCount : 0));
     expect(renders.suspenseCount).toBe(1);
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -3386,21 +3457,24 @@ describe("useSuspenseQuery", () => {
     });
 
     const { result, renders } = await renderSuspenseHook(
+      // @ts-expect-error we do not recommend this pattern
       () => useSuspenseQuery(query),
       { client }
     );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         ...mocks[1].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
     });
 
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
         ...mocks[1].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -3421,13 +3495,15 @@ describe("useSuspenseQuery", () => {
     });
 
     const { result, renders } = await renderSuspenseHook(
+      // @ts-expect-error we do not recommend this pattern
       () => useSuspenseQuery(query),
       { strictMode: true, client }
     );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         ...mocks[1].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -3435,14 +3511,16 @@ describe("useSuspenseQuery", () => {
 
     // React double invokes the render function in strict mode so we expect 2
     // frames to be rendered here.
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
         ...mocks[1].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
       {
         ...mocks[1].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -3459,10 +3537,7 @@ describe("useSuspenseQuery", () => {
     const client = new ApolloClient({
       cache: new InMemoryCache(),
       link: new ApolloLink((operation) => {
-        return new Observable((observer) => {
-          observer.next({ data: { vars: operation.variables } });
-          observer.complete();
-        });
+        return of({ data: { vars: operation.variables } }).pipe(delay(200));
       }),
       defaultOptions: {
         watchQuery: {
@@ -3471,53 +3546,62 @@ describe("useSuspenseQuery", () => {
       },
     });
 
-    const { result, rerenderAsync, renders } = await renderSuspenseHook(
+    using _disabledAct = disableActEnvironment();
+    const { takeRender, rerender } = await renderUseSuspenseQuery(
       ({ source }) =>
         useSuspenseQuery(query, {
           fetchPolicy: "network-only",
           variables: { source, localOnlyVar: true },
         }),
-      { client, initialProps: { source: "local" } }
+      {
+        wrapper: createClientWrapper(client),
+        initialProps: { source: "local" },
+      }
     );
 
-    await waitFor(() => {
-      expect(result.current).toMatchObject({
+    {
+      const { renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["<Suspense />"]);
+    }
+
+    {
+      const { snapshot, renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["useSuspenseQuery"]);
+      expect(snapshot).toStrictEqualTyped({
         data: {
           vars: { source: "local", globalOnlyVar: true, localOnlyVar: true },
         },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
-    });
+    }
 
-    await rerenderAsync({ source: "rerender" });
+    await rerender({ source: "rerender" });
 
-    await waitFor(() => {
-      expect(result.current).toMatchObject({
+    {
+      const { renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["<Suspense />"]);
+    }
+
+    {
+      const { snapshot, renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["useSuspenseQuery"]);
+      expect(snapshot).toStrictEqualTyped({
         data: {
           vars: { source: "rerender", globalOnlyVar: true, localOnlyVar: true },
         },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
-    });
+    }
 
-    expect(renders.frames).toMatchObject([
-      {
-        data: {
-          vars: { source: "local", globalOnlyVar: true, localOnlyVar: true },
-        },
-        networkStatus: NetworkStatus.ready,
-        error: undefined,
-      },
-      {
-        data: {
-          vars: { source: "rerender", globalOnlyVar: true, localOnlyVar: true },
-        },
-        networkStatus: NetworkStatus.ready,
-        error: undefined,
-      },
-    ]);
+    await expect(takeRender).not.toRerender();
   });
 
   it("can unset a globally defined variable", async () => {
@@ -3551,8 +3635,9 @@ describe("useSuspenseQuery", () => {
     );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: { vars: { source: "local" } },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -3564,9 +3649,10 @@ describe("useSuspenseQuery", () => {
     // they have strictly the same keys and values.
     expect(result.current.data.vars).not.toHaveProperty("globalOnlyVar");
 
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
         data: { vars: { source: "local" } },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -3601,8 +3687,9 @@ describe("useSuspenseQuery", () => {
     );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: { context: { valueA: "A", valueB: "B" } },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -3629,11 +3716,10 @@ describe("useSuspenseQuery", () => {
     expect(renders.suspenseCount).toBe(1);
     expect(renders.frames).toEqual([]);
 
-    const [error] = renders.errors as ApolloError[];
+    const [error] = renders.errors;
 
-    expect(error).toBeInstanceOf(ApolloError);
-    expect(error.networkError).toEqual(new Error("Could not fetch"));
-    expect(error.graphQLErrors).toEqual([]);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).toEqual(new Error("Could not fetch"));
   });
 
   it("throws graphql errors by default", async () => {
@@ -3656,13 +3742,14 @@ describe("useSuspenseQuery", () => {
     expect(renders.suspenseCount).toBe(1);
     expect(renders.frames).toEqual([]);
 
-    const [error] = renders.errors as ApolloError[];
+    const [error] = renders.errors;
 
-    expect(error).toBeInstanceOf(ApolloError);
-    expect(error.networkError).toBeNull();
-    expect(error.graphQLErrors).toEqual([
-      new GraphQLError("`id` should not be null"),
-    ]);
+    expect(error).toBeInstanceOf(CombinedGraphQLErrors);
+    expect(error).toEqual(
+      new CombinedGraphQLErrors({
+        errors: [{ message: "`id` should not be null" }],
+      })
+    );
   });
 
   it("tears down subscription when throwing an error", async () => {
@@ -3688,7 +3775,7 @@ describe("useSuspenseQuery", () => {
     await waitFor(() => expect(renders.errorCount).toBe(1));
 
     // The query was never retained since the error was thrown before the
-    // useEffect coud run. We need to wait for the auto dispose timeout to kick
+    // useEffect could run. We need to wait for the auto dispose timeout to kick
     // in before we check whether the observable was cleaned up
     jest.advanceTimersByTime(30_000);
 
@@ -3737,8 +3824,9 @@ describe("useSuspenseQuery", () => {
     );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
-        ...mocks[0].result,
+      expect(result.current).toStrictEqualTyped({
+        data: mocks[0].result.data,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -3770,11 +3858,10 @@ describe("useSuspenseQuery", () => {
     expect(renders.suspenseCount).toBe(1);
     expect(renders.frames).toEqual([]);
 
-    const [error] = renders.errors as ApolloError[];
+    const [error] = renders.errors;
 
-    expect(error).toBeInstanceOf(ApolloError);
-    expect(error.networkError).toEqual(new Error("Could not fetch"));
-    expect(error.graphQLErrors).toEqual([]);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).toEqual(new Error("Could not fetch"));
   });
 
   it('throws graphql errors when errorPolicy is set to "none"', async () => {
@@ -3795,13 +3882,14 @@ describe("useSuspenseQuery", () => {
     expect(renders.suspenseCount).toBe(1);
     expect(renders.frames).toEqual([]);
 
-    const [error] = renders.errors as ApolloError[];
+    const [error] = renders.errors;
 
-    expect(error).toBeInstanceOf(ApolloError);
-    expect(error.networkError).toBeNull();
-    expect(error.graphQLErrors).toEqual([
-      new GraphQLError("`id` should not be null"),
-    ]);
+    expect(error).toBeInstanceOf(CombinedGraphQLErrors);
+    expect(error).toEqual(
+      new CombinedGraphQLErrors({
+        errors: [{ message: "`id` should not be null" }],
+      })
+    );
   });
 
   it('handles multiple graphql errors when errorPolicy is set to "none"', async () => {
@@ -3825,37 +3913,44 @@ describe("useSuspenseQuery", () => {
     expect(renders.suspenseCount).toBe(1);
     expect(renders.frames).toEqual([]);
 
-    const [error] = renders.errors as ApolloError[];
+    const [error] = renders.errors;
 
-    expect(error).toBeInstanceOf(ApolloError);
-    expect(error!.networkError).toBeNull();
-    expect(error!.graphQLErrors).toEqual(graphQLErrors);
+    expect(error).toBeInstanceOf(CombinedGraphQLErrors);
+    expect(error).toEqual(new CombinedGraphQLErrors({ errors: graphQLErrors }));
   });
 
-  it('throws network errors when errorPolicy is set to "ignore"', async () => {
+  it('does not throw or return network errors when errorPolicy is set to "ignore"', async () => {
     using _consoleSpy = spyOnConsole("error");
     const networkError = new Error("Could not fetch");
 
     const { query, mocks } = useErrorCase({ networkError });
 
-    const { renders } = await renderSuspenseHook(
+    const { result, renders } = await renderSuspenseHook(
       () => useSuspenseQuery(query, { errorPolicy: "ignore" }),
       { mocks }
     );
 
     await waitFor(() => {
-      expect(renders.errorCount).toBe(1);
+      expect(result.current).toStrictEqualTyped({
+        data: undefined,
+        dataState: "empty",
+        networkStatus: NetworkStatus.ready,
+        error: undefined,
+      });
     });
 
-    expect(renders.errors.length).toBe(1);
+    expect(renders.errorCount).toBe(0);
+    expect(renders.errors).toEqual([]);
+    expect(renders.count).toBe(2 + (IS_REACT_19 ? renders.suspenseCount : 0));
     expect(renders.suspenseCount).toBe(1);
-    expect(renders.frames).toEqual([]);
-
-    const [error] = renders.errors as ApolloError[];
-
-    expect(error).toBeInstanceOf(ApolloError);
-    expect(error!.networkError).toEqual(networkError);
-    expect(error!.graphQLErrors).toEqual([]);
+    expect(renders.frames).toStrictEqualTyped([
+      {
+        data: undefined,
+        dataState: "empty",
+        networkStatus: NetworkStatus.ready,
+        error: undefined,
+      },
+    ]);
   });
 
   it('does not throw or return graphql errors when errorPolicy is set to "ignore"', async () => {
@@ -3869,8 +3964,9 @@ describe("useSuspenseQuery", () => {
     );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: undefined,
+        dataState: "empty",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -3880,8 +3976,13 @@ describe("useSuspenseQuery", () => {
     expect(renders.errors).toEqual([]);
     expect(renders.count).toBe(2 + (IS_REACT_19 ? renders.suspenseCount : 0));
     expect(renders.suspenseCount).toBe(1);
-    expect(renders.frames).toMatchObject([
-      { data: undefined, networkStatus: NetworkStatus.ready, error: undefined },
+    expect(renders.frames).toStrictEqualTyped([
+      {
+        data: undefined,
+        dataState: "empty",
+        networkStatus: NetworkStatus.ready,
+        error: undefined,
+      },
     ]);
   });
 
@@ -3897,16 +3998,18 @@ describe("useSuspenseQuery", () => {
     );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: { currentUser: { id: "1", name: null } },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
     });
 
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
         data: { currentUser: { id: "1", name: null } },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -3927,15 +4030,21 @@ describe("useSuspenseQuery", () => {
     );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: undefined,
+        dataState: "empty",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
     });
 
-    expect(renders.frames).toMatchObject([
-      { data: undefined, networkStatus: NetworkStatus.ready, error: undefined },
+    expect(renders.frames).toStrictEqualTyped([
+      {
+        data: undefined,
+        dataState: "empty",
+        networkStatus: NetworkStatus.ready,
+        error: undefined,
+      },
     ]);
   });
 
@@ -3955,76 +4064,95 @@ describe("useSuspenseQuery", () => {
     );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: undefined,
+        dataState: "empty",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
     });
 
-    client.writeQuery({
-      query,
-      data: {
-        currentUser: {
-          id: "1",
-          name: "Cache User",
-        },
-      },
-    });
-
-    await waitFor(() => {
-      expect(result.current).toMatchObject({
+    act(() => {
+      client.writeQuery({
+        query,
         data: {
           currentUser: {
             id: "1",
             name: "Cache User",
           },
         },
+      });
+    });
+
+    await waitFor(() => {
+      expect(result.current).toStrictEqualTyped({
+        data: {
+          currentUser: {
+            id: "1",
+            name: "Cache User",
+          },
+        },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
     });
 
     expect(renders.count).toBe(3 + (IS_REACT_19 ? renders.suspenseCount : 0));
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
         data: undefined,
+        dataState: "empty",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
       {
         data: { currentUser: { id: "1", name: "Cache User" } },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
     ]);
   });
 
-  it('throws network errors when errorPolicy is set to "all"', async () => {
+  it('does not throw and returns network errors when errorPolicy is set to "all"', async () => {
     using _consoleSpy = spyOnConsole("error");
 
     const networkError = new Error("Could not fetch");
 
     const { query, mocks } = useErrorCase({ networkError });
 
-    const { renders } = await renderSuspenseHook(
+    const { result, renders } = await renderSuspenseHook(
       () => useSuspenseQuery(query, { errorPolicy: "all" }),
       { mocks }
     );
 
     await waitFor(() => {
-      expect(renders.errorCount).toBe(1);
+      expect(result.current).toStrictEqualTyped({
+        data: undefined,
+        dataState: "empty",
+        networkStatus: NetworkStatus.error,
+        error: networkError,
+      });
     });
 
-    expect(renders.errors.length).toBe(1);
+    expect(renders.errorCount).toBe(0);
+    expect(renders.errors).toEqual([]);
+    expect(renders.count).toBe(2 + (IS_REACT_19 ? renders.suspenseCount : 0));
     expect(renders.suspenseCount).toBe(1);
-    expect(renders.frames).toEqual([]);
+    expect(renders.frames).toStrictEqualTyped([
+      {
+        data: undefined,
+        dataState: "empty",
+        networkStatus: NetworkStatus.error,
+        error: networkError,
+      },
+    ]);
 
-    const [error] = renders.errors as ApolloError[];
+    const { error } = result.current;
 
-    expect(error).toBeInstanceOf(ApolloError);
-    expect(error!.networkError).toEqual(networkError);
-    expect(error!.graphQLErrors).toEqual([]);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).toEqual(networkError);
   });
 
   it('does not throw and returns graphql errors when errorPolicy is set to "all"', async () => {
@@ -4038,9 +4166,11 @@ describe("useSuspenseQuery", () => {
     );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: undefined,
-        error: new ApolloError({ graphQLErrors: [graphQLError] }),
+        dataState: "empty",
+        networkStatus: NetworkStatus.error,
+        error: new CombinedGraphQLErrors({ errors: [graphQLError] }),
       });
     });
 
@@ -4048,19 +4178,21 @@ describe("useSuspenseQuery", () => {
     expect(renders.errors).toEqual([]);
     expect(renders.count).toBe(2 + (IS_REACT_19 ? renders.suspenseCount : 0));
     expect(renders.suspenseCount).toBe(1);
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
         data: undefined,
+        dataState: "empty",
         networkStatus: NetworkStatus.error,
-        error: new ApolloError({ graphQLErrors: [graphQLError] }),
+        error: new CombinedGraphQLErrors({ errors: [graphQLError] }),
       },
     ]);
 
     const { error } = result.current;
 
-    expect(error).toBeInstanceOf(ApolloError);
-    expect(error!.networkError).toBeNull();
-    expect(error!.graphQLErrors).toEqual([graphQLError]);
+    expect(error).toBeInstanceOf(CombinedGraphQLErrors);
+    expect(error).toEqual(
+      new CombinedGraphQLErrors({ errors: [graphQLError] })
+    );
   });
 
   it('responds to cache updates and clears errors after an error returns when errorPolicy is set to "all"', async () => {
@@ -4079,45 +4211,51 @@ describe("useSuspenseQuery", () => {
     );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: undefined,
+        dataState: "empty",
         networkStatus: NetworkStatus.error,
-        error: new ApolloError({ graphQLErrors: [graphQLError] }),
+        error: new CombinedGraphQLErrors({ errors: [graphQLError] }),
       });
     });
 
-    client.writeQuery({
-      query,
-      data: {
-        currentUser: {
-          id: "1",
-          name: "Cache User",
-        },
-      },
-    });
-
-    await waitFor(() => {
-      expect(result.current).toMatchObject({
+    act(() => {
+      client.writeQuery({
+        query,
         data: {
           currentUser: {
             id: "1",
             name: "Cache User",
           },
         },
+      });
+    });
+
+    await waitFor(() => {
+      expect(result.current).toStrictEqualTyped({
+        data: {
+          currentUser: {
+            id: "1",
+            name: "Cache User",
+          },
+        },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
     });
 
     expect(renders.count).toBe(3 + (IS_REACT_19 ? renders.suspenseCount : 0));
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
         data: undefined,
+        dataState: "empty",
         networkStatus: NetworkStatus.error,
-        error: new ApolloError({ graphQLErrors: [graphQLError] }),
+        error: new CombinedGraphQLErrors({ errors: [graphQLError] }),
       },
       {
         data: { currentUser: { id: "1", name: "Cache User" } },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -4137,11 +4275,13 @@ describe("useSuspenseQuery", () => {
       { mocks }
     );
 
-    const expectedError = new ApolloError({ graphQLErrors });
+    const expectedError = new CombinedGraphQLErrors({ errors: graphQLErrors });
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: undefined,
+        dataState: "empty",
+        networkStatus: NetworkStatus.error,
         error: expectedError,
       });
     });
@@ -4150,9 +4290,10 @@ describe("useSuspenseQuery", () => {
     expect(renders.errors).toEqual([]);
     expect(renders.count).toBe(2 + (IS_REACT_19 ? renders.suspenseCount : 0));
     expect(renders.suspenseCount).toBe(1);
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
         data: undefined,
+        dataState: "empty",
         networkStatus: NetworkStatus.error,
         error: expectedError,
       },
@@ -4160,9 +4301,8 @@ describe("useSuspenseQuery", () => {
 
     const { error } = result.current;
 
-    expect(error).toBeInstanceOf(ApolloError);
-    expect(error!.networkError).toBeNull();
-    expect(error!.graphQLErrors).toEqual(graphQLErrors);
+    expect(error).toBeInstanceOf(CombinedGraphQLErrors);
+    expect(error).toEqual(expectedError);
   });
 
   it('returns partial data and keeps errors when errorPolicy is set to "all"', async () => {
@@ -4178,19 +4318,24 @@ describe("useSuspenseQuery", () => {
       { mocks }
     );
 
-    const expectedError = new ApolloError({ graphQLErrors: [graphQLError] });
+    const expectedError = new CombinedGraphQLErrors({
+      data: { currentUser: { id: "1", name: null } },
+      errors: [graphQLError],
+    });
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: { currentUser: { id: "1", name: null } },
+        dataState: "complete",
         networkStatus: NetworkStatus.error,
         error: expectedError,
       });
     });
 
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
         data: { currentUser: { id: "1", name: null } },
+        dataState: "complete",
         networkStatus: NetworkStatus.error,
         error: expectedError,
       },
@@ -4209,7 +4354,7 @@ describe("useSuspenseQuery", () => {
       { mocks }
     );
 
-    const expectedError = new ApolloError({ graphQLErrors: [graphQLError] });
+    const expectedError = new CombinedGraphQLErrors({ errors: [graphQLError] });
 
     await waitFor(() => {
       expect(result.current.error).toEqual(expectedError);
@@ -4230,7 +4375,9 @@ describe("useSuspenseQuery", () => {
       }
     `;
 
-    const graphQLErrors = [new GraphQLError("Could not fetch user 1")];
+    const graphQLErrors: GraphQLFormattedError[] = [
+      { message: "Could not fetch user 1" },
+    ];
 
     const mocks = [
       {
@@ -4238,59 +4385,65 @@ describe("useSuspenseQuery", () => {
         result: {
           errors: graphQLErrors,
         },
-        delay: 20,
+        delay: 200,
       },
       {
         request: { query, variables: { id: "2" } },
         result: {
           data: { user: { id: "2", name: "Captain Marvel" } },
         },
-        delay: 20,
+        delay: 200,
       },
     ];
 
-    const { result, renders, rerenderAsync } = await renderSuspenseHook(
+    using _disabledAct = disableActEnvironment();
+    const { rerender, takeRender } = await renderUseSuspenseQuery(
       ({ id }) =>
         useSuspenseQuery(query, { errorPolicy: "all", variables: { id } }),
-      { mocks, initialProps: { id: "1" } }
+      { wrapper: createMockWrapper({ mocks }), initialProps: { id: "1" } }
     );
 
-    const expectedError = new ApolloError({ graphQLErrors });
+    const expectedError = new CombinedGraphQLErrors({ errors: graphQLErrors });
 
-    await waitFor(() => {
-      expect(result.current).toMatchObject({
+    {
+      const { renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["<Suspense />"]);
+    }
+
+    {
+      const { snapshot, renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["useSuspenseQuery"]);
+      expect(snapshot).toStrictEqualTyped({
         data: undefined,
+        dataState: "empty",
         networkStatus: NetworkStatus.error,
         error: expectedError,
       });
-    });
+    }
 
-    await rerenderAsync({ id: "2" });
+    await rerender({ id: "2" });
 
-    await waitFor(() => {
-      expect(result.current).toMatchObject({
-        ...mocks[1].result,
+    {
+      const { renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["<Suspense />"]);
+    }
+
+    {
+      const { snapshot, renderedComponents } = await takeRender();
+
+      expect(renderedComponents).toStrictEqual(["useSuspenseQuery"]);
+      expect(snapshot).toStrictEqualTyped({
+        data: mocks[1].result.data,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
-    });
+    }
 
-    expect(renders.count).toBe(4 + (IS_REACT_19 ? renders.suspenseCount : 0));
-    expect(renders.errorCount).toBe(0);
-    expect(renders.errors).toEqual([]);
-    expect(renders.suspenseCount).toBe(2);
-    expect(renders.frames).toMatchObject([
-      {
-        data: undefined,
-        networkStatus: NetworkStatus.error,
-        error: expectedError,
-      },
-      {
-        ...mocks[1].result,
-        networkStatus: NetworkStatus.ready,
-        error: undefined,
-      },
-    ]);
+    await expect(takeRender).not.toRerender();
   });
 
   it("re-suspends when calling `refetch`", async () => {
@@ -4326,8 +4479,9 @@ describe("useSuspenseQuery", () => {
     );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -4341,8 +4495,9 @@ describe("useSuspenseQuery", () => {
       void result.current.refetch();
     });
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         ...mocks[1].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -4350,14 +4505,16 @@ describe("useSuspenseQuery", () => {
 
     expect(renders.count).toBe(4 + (IS_REACT_19 ? renders.suspenseCount : 0));
     expect(renders.suspenseCount).toBe(2);
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
       {
         ...mocks[1].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -4386,7 +4543,7 @@ describe("useSuspenseQuery", () => {
       }
     `;
 
-    const mocks: MockedResponse<Data, Variables>[] = [
+    const mocks: MockLink.MockedResponse<Data, Variables>[] = [
       {
         request: { query, variables: { id: "1" } },
         result: {
@@ -4494,8 +4651,9 @@ describe("useSuspenseQuery", () => {
     );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -4506,22 +4664,25 @@ describe("useSuspenseQuery", () => {
     });
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         ...mocks[1].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
     });
     expect(renders.count).toBe(4 + (IS_REACT_19 ? renders.suspenseCount : 0));
     expect(renders.suspenseCount).toBe(2);
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
       {
         ...mocks[1].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -4568,19 +4729,9 @@ describe("useSuspenseQuery", () => {
     );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
-        ...mocks[0].result,
-        error: undefined,
-      });
-    });
-
-    await actAsync(async () => {
-      void result.current.refetch();
-    });
-
-    await waitFor(() => {
-      expect(result.current).toMatchObject({
-        ...mocks[1].result,
+      expect(result.current).toStrictEqualTyped({
+        data: mocks[0].result.data,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -4591,8 +4742,22 @@ describe("useSuspenseQuery", () => {
     });
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
+        ...mocks[1].result,
+        dataState: "complete",
+        networkStatus: NetworkStatus.ready,
+        error: undefined,
+      });
+    });
+
+    await actAsync(async () => {
+      void result.current.refetch();
+    });
+
+    await waitFor(() => {
+      expect(result.current).toStrictEqualTyped({
         ...mocks[2].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -4600,19 +4765,22 @@ describe("useSuspenseQuery", () => {
 
     expect(renders.count).toBe(6 + (IS_REACT_19 ? renders.suspenseCount : 0));
     expect(renders.suspenseCount).toBe(3);
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
       {
         ...mocks[1].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
       {
         ...mocks[2].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -4654,8 +4822,9 @@ describe("useSuspenseQuery", () => {
     );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
-        ...mocks[0].result,
+      expect(result.current).toStrictEqualTyped({
+        data: mocks[0].result.data,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -4670,13 +4839,14 @@ describe("useSuspenseQuery", () => {
     });
 
     expect(renders.errors).toEqual([
-      new ApolloError({
-        graphQLErrors: [new GraphQLError("Something went wrong")],
+      new CombinedGraphQLErrors({
+        errors: [{ message: "Something went wrong" }],
       }),
     ]);
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
-        ...mocks[0].result,
+        data: mocks[0].result.data,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -4720,8 +4890,9 @@ describe("useSuspenseQuery", () => {
     );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
-        ...mocks[0].result,
+      expect(result.current).toStrictEqualTyped({
+        data: mocks[0].result.data,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -4733,14 +4904,16 @@ describe("useSuspenseQuery", () => {
 
     expect(renders.errorCount).toBe(0);
     expect(renders.errors).toEqual([]);
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
-        ...mocks[0].result,
+        data: mocks[0].result.data,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
       {
-        ...mocks[0].result,
+        data: mocks[0].result.data,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -4783,13 +4956,14 @@ describe("useSuspenseQuery", () => {
       { mocks }
     );
 
-    const expectedError = new ApolloError({
-      graphQLErrors: [new GraphQLError("Something went wrong")],
+    const expectedError = new CombinedGraphQLErrors({
+      errors: [{ message: "Something went wrong" }],
     });
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
-        ...mocks[0].result,
+      expect(result.current).toStrictEqualTyped({
+        data: mocks[0].result.data,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -4800,8 +4974,9 @@ describe("useSuspenseQuery", () => {
     });
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
-        ...mocks[0].result,
+      expect(result.current).toStrictEqualTyped({
+        data: mocks[0].result.data,
+        dataState: "complete",
         networkStatus: NetworkStatus.error,
         error: expectedError,
       });
@@ -4809,14 +4984,16 @@ describe("useSuspenseQuery", () => {
 
     expect(renders.errorCount).toBe(0);
     expect(renders.errors).toEqual([]);
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
-        ...mocks[0].result,
+        data: mocks[0].result.data,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
       {
-        ...mocks[0].result,
+        data: mocks[0].result.data,
+        dataState: "complete",
         networkStatus: NetworkStatus.error,
         error: expectedError,
       },
@@ -4860,13 +5037,16 @@ describe("useSuspenseQuery", () => {
       { mocks }
     );
 
-    const expectedError = new ApolloError({
-      graphQLErrors: [new GraphQLError("Something went wrong")],
+    const expectedError = new CombinedGraphQLErrors({
+      data: { user: { id: "1", name: null } },
+      errors: [{ message: "Something went wrong" }],
     });
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         ...mocks[0].result,
+        dataState: "complete",
+        networkStatus: NetworkStatus.ready,
         error: undefined,
       });
     });
@@ -4876,8 +5056,9 @@ describe("useSuspenseQuery", () => {
     });
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: mocks[1].result.data,
+        dataState: "complete",
         networkStatus: NetworkStatus.error,
         error: expectedError,
       });
@@ -4885,14 +5066,16 @@ describe("useSuspenseQuery", () => {
 
     expect(renders.errorCount).toBe(0);
     expect(renders.errors).toEqual([]);
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
       {
         data: mocks[1].result.data,
+        dataState: "complete",
         networkStatus: NetworkStatus.error,
         error: expectedError,
       },
@@ -4900,47 +5083,87 @@ describe("useSuspenseQuery", () => {
   });
 
   it("re-suspends when calling `fetchMore` with different variables", async () => {
-    const { data, query, link } = usePaginatedCase();
+    const { data, query, link } = usePaginatedCase({ delay: 150 });
+    const client = new ApolloClient({
+      link,
+      cache: new InMemoryCache(),
+    });
 
-    const { result, renders } = await renderSuspenseHook(
-      () => useSuspenseQuery(query, { variables: { limit: 2 } }),
-      { link }
-    );
+    const renderStream = createRenderStream<
+      useSuspenseQuery.Result<
+        usePaginatedCase.QueryData,
+        usePaginatedCase.Variables
+      >
+    >({ skipNonTrackingRenders: true });
 
-    await waitFor(() => {
-      expect(result.current).toMatchObject({
+    function Component() {
+      useTrackRenders();
+      renderStream.replaceSnapshot(
+        useSuspenseQuery(query, { variables: { limit: 2 } })
+      );
+      return <div />;
+    }
+    function SuspenseFallback() {
+      useTrackRenders();
+      return <p>Loading</p>;
+    }
+    function ErrorFallback() {
+      useTrackRenders();
+      return <p>Error</p>;
+    }
+    function App() {
+      useTrackRenders();
+      return (
+        <Suspense fallback={<SuspenseFallback />}>
+          <ErrorBoundary fallback={<ErrorFallback />}>
+            <Component />
+          </ErrorBoundary>
+        </Suspense>
+      );
+    }
+
+    using _disabledAct = disableActEnvironment();
+    await renderStream.render(<App />, {
+      wrapper: createClientWrapper(client),
+    });
+
+    {
+      const { renderedComponents } = await renderStream.takeRender();
+      expect(renderedComponents).toStrictEqual([App, SuspenseFallback]);
+    }
+
+    {
+      const { renderedComponents, snapshot } = await renderStream.takeRender();
+      expect(renderedComponents).toStrictEqual([Component]);
+      expect(snapshot).toStrictEqualTyped({
         data: { letters: data.slice(0, 2) },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
-    });
+    }
 
-    await actAsync(async () => {
-      await result.current.fetchMore({ variables: { offset: 2 } });
-    });
+    renderStream
+      .getCurrentRender()
+      .snapshot.fetchMore({ variables: { offset: 2 } });
 
-    await waitFor(() => {
-      expect(result.current).toMatchObject({
+    {
+      const { renderedComponents } = await renderStream.takeRender();
+      expect(renderedComponents).toStrictEqual([SuspenseFallback]);
+    }
+
+    {
+      const { renderedComponents, snapshot } = await renderStream.takeRender();
+      expect(renderedComponents).toStrictEqual([Component]);
+      expect(snapshot).toStrictEqualTyped({
         data: { letters: data.slice(2, 4) },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
-    });
+    }
 
-    expect(renders.count).toBe(4 + (IS_REACT_19 ? renders.suspenseCount : 0));
-    expect(renders.suspenseCount).toBe(2);
-    expect(renders.frames).toMatchObject([
-      {
-        data: { letters: data.slice(0, 2) },
-        networkStatus: NetworkStatus.ready,
-        error: undefined,
-      },
-      {
-        data: { letters: data.slice(2, 4) },
-        networkStatus: NetworkStatus.ready,
-        error: undefined,
-      },
-    ]);
+    await expect(renderStream).not.toRerender();
   });
 
   it("properly resolves `fetchMore` when returning a result that is deeply equal to data in the cache", async () => {
@@ -5020,8 +5243,9 @@ describe("useSuspenseQuery", () => {
       { cache, mocks }
     );
 
-    expect(result.current).toMatchObject({
+    expect(result.current).toStrictEqualTyped({
       data: { greeting: "hello from cache" },
+      dataState: "complete",
       networkStatus: NetworkStatus.ready,
       error: undefined,
     });
@@ -5031,8 +5255,9 @@ describe("useSuspenseQuery", () => {
     });
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: { greeting: "Hello" },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -5040,14 +5265,16 @@ describe("useSuspenseQuery", () => {
 
     expect(renders.count).toBe(3 + (IS_REACT_19 ? renders.suspenseCount : 0));
     expect(renders.suspenseCount).toBe(1);
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
         data: { greeting: "hello from cache" },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
       {
         data: { greeting: "Hello" },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -5063,8 +5290,10 @@ describe("useSuspenseQuery", () => {
     );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: { letters: data.slice(0, 2) },
+        dataState: "complete",
+        networkStatus: NetworkStatus.ready,
         error: undefined,
       });
     });
@@ -5079,20 +5308,24 @@ describe("useSuspenseQuery", () => {
     });
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: { letters: data.slice(0, 4) },
+        dataState: "complete",
+        networkStatus: NetworkStatus.ready,
         error: undefined,
       });
     });
 
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
         data: { letters: data.slice(0, 2) },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
       {
         data: { letters: data.slice(0, 4) },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -5118,8 +5351,9 @@ describe("useSuspenseQuery", () => {
     );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: { letters: data.slice(0, 2) },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -5130,21 +5364,24 @@ describe("useSuspenseQuery", () => {
     });
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: { letters: data.slice(0, 4) },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
     });
 
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
         data: { letters: data.slice(0, 2) },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
       {
         data: { letters: data.slice(0, 4) },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -5201,8 +5438,9 @@ describe("useSuspenseQuery", () => {
     );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -5215,8 +5453,9 @@ describe("useSuspenseQuery", () => {
     });
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         ...mocks[1].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -5278,8 +5517,9 @@ describe("useSuspenseQuery", () => {
     );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -5292,8 +5532,9 @@ describe("useSuspenseQuery", () => {
     });
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: { primes: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29] },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -5354,8 +5595,9 @@ describe("useSuspenseQuery", () => {
     );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -5368,8 +5610,9 @@ describe("useSuspenseQuery", () => {
     });
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         ...mocks[1].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -5392,8 +5635,9 @@ describe("useSuspenseQuery", () => {
     );
 
     expect(renders.suspenseCount).toBe(0);
-    expect(result.current).toMatchObject({
+    expect(result.current).toStrictEqualTyped({
       data: undefined,
+      dataState: "empty",
       networkStatus: NetworkStatus.ready,
       error: undefined,
     });
@@ -5410,8 +5654,9 @@ describe("useSuspenseQuery", () => {
     );
 
     expect(renders.suspenseCount).toBe(0);
-    expect(result.current).toMatchObject({
+    expect(result.current).toStrictEqualTyped({
       data: undefined,
+      dataState: "empty",
       networkStatus: NetworkStatus.ready,
       error: undefined,
     });
@@ -5428,8 +5673,9 @@ describe("useSuspenseQuery", () => {
     );
 
     expect(renders.suspenseCount).toBe(0);
-    expect(result.current).toMatchObject({
+    expect(result.current).toStrictEqualTyped({
       data: undefined,
+      dataState: "empty",
       networkStatus: NetworkStatus.ready,
       error: undefined,
     });
@@ -5439,8 +5685,9 @@ describe("useSuspenseQuery", () => {
     expect(renders.suspenseCount).toBe(1);
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -5448,10 +5695,16 @@ describe("useSuspenseQuery", () => {
 
     expect(renders.count).toBe(3 + (IS_REACT_19 ? renders.suspenseCount : 0));
     expect(renders.suspenseCount).toBe(1);
-    expect(renders.frames).toMatchObject([
-      { data: undefined, networkStatus: NetworkStatus.ready, error: undefined },
+    expect(renders.frames).toStrictEqualTyped([
+      {
+        data: undefined,
+        dataState: "empty",
+        networkStatus: NetworkStatus.ready,
+        error: undefined,
+      },
       {
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -5467,8 +5720,9 @@ describe("useSuspenseQuery", () => {
     );
 
     expect(renders.suspenseCount).toBe(0);
-    expect(result.current).toMatchObject({
+    expect(result.current).toStrictEqualTyped({
       data: undefined,
+      dataState: "empty",
       networkStatus: NetworkStatus.ready,
       error: undefined,
     });
@@ -5478,8 +5732,9 @@ describe("useSuspenseQuery", () => {
     expect(renders.suspenseCount).toBe(1);
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -5487,10 +5742,16 @@ describe("useSuspenseQuery", () => {
 
     expect(renders.count).toBe(3 + (IS_REACT_19 ? renders.suspenseCount : 0));
     expect(renders.suspenseCount).toBe(1);
-    expect(renders.frames).toMatchObject([
-      { data: undefined, networkStatus: NetworkStatus.ready, error: undefined },
+    expect(renders.frames).toStrictEqualTyped([
+      {
+        data: undefined,
+        dataState: "empty",
+        networkStatus: NetworkStatus.ready,
+        error: undefined,
+      },
       {
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -5510,8 +5771,9 @@ describe("useSuspenseQuery", () => {
     expect(renders.suspenseCount).toBe(1);
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -5521,22 +5783,25 @@ describe("useSuspenseQuery", () => {
 
     expect(renders.suspenseCount).toBe(1);
 
-    expect(result.current).toMatchObject({
+    expect(result.current).toStrictEqualTyped({
       ...mocks[0].result,
+      dataState: "complete",
       networkStatus: NetworkStatus.ready,
       error: undefined,
     });
 
     expect(renders.count).toBe(3 + (IS_REACT_19 ? renders.suspenseCount : 0));
     expect(renders.suspenseCount).toBe(1);
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
       {
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -5556,8 +5821,9 @@ describe("useSuspenseQuery", () => {
     expect(renders.suspenseCount).toBe(1);
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -5567,22 +5833,25 @@ describe("useSuspenseQuery", () => {
 
     expect(renders.suspenseCount).toBe(1);
 
-    expect(result.current).toMatchObject({
+    expect(result.current).toStrictEqualTyped({
       ...mocks[0].result,
+      dataState: "complete",
       networkStatus: NetworkStatus.ready,
       error: undefined,
     });
 
     expect(renders.count).toBe(3 + (IS_REACT_19 ? renders.suspenseCount : 0));
     expect(renders.suspenseCount).toBe(1);
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
       {
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -5623,8 +5892,9 @@ describe("useSuspenseQuery", () => {
     expect(fetchCount).toBe(1);
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -5670,8 +5940,9 @@ describe("useSuspenseQuery", () => {
     expect(fetchCount).toBe(1);
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -5718,8 +5989,9 @@ describe("useSuspenseQuery", () => {
     expect(fetchCount).toBe(1);
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -5764,8 +6036,9 @@ describe("useSuspenseQuery", () => {
     expect(fetchCount).toBe(1);
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -5852,7 +6125,7 @@ describe("useSuspenseQuery", () => {
       }
     `;
 
-    const mocks: MockedResponse<Data, Variables>[] = [
+    const mocks: MockLink.MockedResponse<Data, Variables>[] = [
       {
         request: { query, variables: { id: "1" } },
         result: {
@@ -5956,7 +6229,7 @@ describe("useSuspenseQuery", () => {
         }
       }
     `;
-    const mocks: MockedResponse<Data, Variables>[] = [
+    const mocks: MockLink.MockedResponse<Data, Variables>[] = [
       {
         request: { query, variables: { id: "1" } },
         result: {
@@ -6056,7 +6329,7 @@ describe("useSuspenseQuery", () => {
         }
       }
     `;
-    const mocks: MockedResponse<Data, Variables>[] = [
+    const mocks: MockLink.MockedResponse<Data, Variables>[] = [
       {
         request: { query, variables: { id: "1" } },
         result: {
@@ -6157,8 +6430,9 @@ describe("useSuspenseQuery", () => {
     );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         ...successMock.result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -6171,10 +6445,11 @@ describe("useSuspenseQuery", () => {
     });
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         ...successMock.result,
+        dataState: "complete",
         networkStatus: NetworkStatus.error,
-        error: new ApolloError({ graphQLErrors: [new GraphQLError("oops")] }),
+        error: new CombinedGraphQLErrors({ errors: [{ message: "oops" }] }),
       });
     });
 
@@ -6185,7 +6460,7 @@ describe("useSuspenseQuery", () => {
         error: f.error,
         networkStatus: f.networkStatus,
       }))
-    ).toMatchObject([
+    ).toStrictEqualTyped([
       {
         ...successMock.result,
         networkStatus: NetworkStatus.ready,
@@ -6199,7 +6474,7 @@ describe("useSuspenseQuery", () => {
       {
         ...successMock.result,
         networkStatus: NetworkStatus.error,
-        error: new ApolloError({ graphQLErrors: [new GraphQLError("oops")] }),
+        error: new CombinedGraphQLErrors({ errors: [{ message: "oops" }] }),
       },
     ]);
   });
@@ -6212,9 +6487,13 @@ describe("useSuspenseQuery", () => {
     `;
 
     const link = new ApolloLink((operation) => {
-      return Observable.of({
+      return of({
         data: {
-          context: operation.getContext(),
+          context: {
+            // Only apply serialized value to prevent comparing against object
+            // with additional client properties
+            phase: operation.getContext().phase,
+          },
         },
       });
     });
@@ -6230,8 +6509,9 @@ describe("useSuspenseQuery", () => {
     );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: { context: { phase: "initialValue" } },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -6244,105 +6524,36 @@ describe("useSuspenseQuery", () => {
     });
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: {
           context: { phase: "rerender" },
         },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
     });
 
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
         data: { context: { phase: "initialValue" } },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
       {
         data: { context: { phase: "initialValue" } },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
       {
         data: { context: { phase: "rerender" } },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
     ]);
-  });
-
-  // NOTE: We only test the `false` -> `true` path here. If the option changes
-  // from `true` -> `false`, the data has already been canonized, so it has no
-  // effect on the output.
-  it("returns canonical results immediately when `canonizeResults` changes from `false` to `true` between renders", async () => {
-    interface Result {
-      __typename: string;
-      value: number;
-    }
-
-    interface Data {
-      results: Result[];
-    }
-
-    const cache = new InMemoryCache({
-      typePolicies: {
-        Result: {
-          keyFields: false,
-        },
-      },
-    });
-
-    const query: TypedDocumentNode<Data> = gql`
-      query {
-        results {
-          value
-        }
-      }
-    `;
-
-    const results: Result[] = [
-      { __typename: "Result", value: 0 },
-      { __typename: "Result", value: 1 },
-      { __typename: "Result", value: 1 },
-      { __typename: "Result", value: 2 },
-      { __typename: "Result", value: 3 },
-      { __typename: "Result", value: 5 },
-    ];
-
-    cache.writeQuery({
-      query,
-      data: { results },
-    });
-
-    function verifyCanonicalResults(data: Data, canonized: boolean) {
-      const resultSet = new Set(data.results);
-      const values = Array.from(resultSet).map((item) => item.value);
-
-      expect(data).toEqual({ results });
-
-      if (canonized) {
-        expect(data.results.length).toBe(6);
-        expect(resultSet.size).toBe(5);
-        expect(values).toEqual([0, 1, 2, 3, 5]);
-      } else {
-        expect(data.results.length).toBe(6);
-        expect(resultSet.size).toBe(6);
-        expect(values).toEqual([0, 1, 1, 2, 3, 5]);
-      }
-    }
-
-    const { result, rerenderAsync, renders } = await renderSuspenseHook(
-      ({ canonizeResults }) => useSuspenseQuery(query, { canonizeResults }),
-      { cache, initialProps: { canonizeResults: false } }
-    );
-
-    verifyCanonicalResults(result.current.data, false);
-
-    await rerenderAsync({ canonizeResults: true });
-
-    verifyCanonicalResults(result.current.data, true);
-    expect(renders.count).toBe(2 + (IS_REACT_19 ? renders.suspenseCount : 0));
   });
 
   it("applies changed `refetchWritePolicy` to next fetch when changing between renders", async () => {
@@ -6404,8 +6615,9 @@ describe("useSuspenseQuery", () => {
     );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -6418,8 +6630,9 @@ describe("useSuspenseQuery", () => {
     });
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: { primes: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29] },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -6440,16 +6653,18 @@ describe("useSuspenseQuery", () => {
     });
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         ...mocks[2].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
     });
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         ...mocks[2].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -6521,23 +6736,75 @@ describe("useSuspenseQuery", () => {
       data: { character: { __typename: "Character", id: "1" } },
     });
 
-    const { result, renders, rerenderAsync } = await renderSuspenseHook(
-      ({ returnPartialData }) =>
-        useSuspenseQuery(fullQuery, { returnPartialData }),
-      { cache, mocks, initialProps: { returnPartialData: false } }
+    const client = new ApolloClient({
+      link: new MockLink(mocks),
+      cache,
+    });
+
+    const renderStream = createRenderStream<useSuspenseQuery.Result>();
+
+    function Component({ returnPartialData }: { returnPartialData: boolean }) {
+      useTrackRenders();
+      renderStream.replaceSnapshot(
+        useSuspenseQuery(fullQuery, { returnPartialData })
+      );
+      return <div />;
+    }
+    function SuspenseFallback() {
+      useTrackRenders();
+      return <p>Loading</p>;
+    }
+    function ErrorFallback() {
+      useTrackRenders();
+      return <p>Error</p>;
+    }
+    function App({ returnPartialData }: { returnPartialData: boolean }) {
+      useTrackRenders();
+      return (
+        <Suspense fallback={<SuspenseFallback />}>
+          <ErrorBoundary fallback={<ErrorFallback />}>
+            <Component returnPartialData={returnPartialData} />
+          </ErrorBoundary>
+        </Suspense>
+      );
+    }
+
+    using _disabledAct = disableActEnvironment();
+    const { rerender } = await renderStream.render(
+      <App returnPartialData={false} />,
+      {
+        wrapper: createClientWrapper(client),
+      }
     );
 
-    expect(renders.suspenseCount).toBe(1);
+    {
+      const { renderedComponents } = await renderStream.takeRender();
+      expect(renderedComponents).toStrictEqual([App, SuspenseFallback]);
+    }
 
-    await waitFor(() => {
-      expect(result.current).toMatchObject({
+    {
+      const { renderedComponents, snapshot } = await renderStream.takeRender();
+      expect(renderedComponents).toStrictEqual([Component]);
+      expect(snapshot).toStrictEqualTyped({
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
-    });
+    }
 
-    await rerenderAsync({ returnPartialData: true });
+    await rerender(<App returnPartialData={true} />);
+
+    {
+      const { renderedComponents, snapshot } = await renderStream.takeRender();
+      expect(renderedComponents).toStrictEqual([App, Component]);
+      expect(snapshot).toStrictEqualTyped({
+        ...mocks[0].result,
+        dataState: "complete",
+        networkStatus: NetworkStatus.ready,
+        error: undefined,
+      });
+    }
 
     cache.modify({
       id: cache.identify({ __typename: "Character", id: "1" }),
@@ -6546,44 +6813,27 @@ describe("useSuspenseQuery", () => {
       },
     });
 
-    await waitFor(() => {
-      expect(result.current.data).toEqual({
-        character: { __typename: "Character", id: "1" },
-      });
-    });
-
-    await waitFor(() => {
-      expect(result.current).toMatchObject({
-        ...mocks[1].result,
-        networkStatus: NetworkStatus.ready,
-        error: undefined,
-      });
-    });
-
-    expect(renders.count).toBe(5 + (IS_REACT_19 ? renders.suspenseCount : 0));
-    expect(renders.suspenseCount).toBe(1);
-    expect(renders.frames).toMatchObject([
-      {
+    {
+      const { renderedComponents, snapshot } = await renderStream.takeRender();
+      expect(renderedComponents).toStrictEqual([Component]);
+      expect(snapshot).toStrictEqualTyped({
         data: { character: { __typename: "Character", id: "1" } },
-        networkStatus: NetworkStatus.ready,
-        error: undefined,
-      },
-      {
-        ...mocks[0].result,
-        networkStatus: NetworkStatus.ready,
-        error: undefined,
-      },
-      {
-        data: { character: { __typename: "Character", id: "1" } },
+        dataState: "partial",
         networkStatus: NetworkStatus.loading,
         error: undefined,
-      },
-      {
+      });
+    }
+
+    {
+      const { renderedComponents, snapshot } = await renderStream.takeRender();
+      expect(renderedComponents).toStrictEqual([Component]);
+      expect(snapshot).toStrictEqualTyped({
         ...mocks[1].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
-      },
-    ]);
+      });
+    }
   });
 
   it("applies updated `fetchPolicy` on next fetch when it changes between renders", async () => {
@@ -6632,12 +6882,12 @@ describe("useSuspenseQuery", () => {
         cache,
         mocks,
         initialProps: {
-          fetchPolicy: "cache-first" as SuspenseQueryHookFetchPolicy,
+          fetchPolicy: "cache-first" as useSuspenseQuery.FetchPolicy,
         },
       }
     );
 
-    expect(result.current).toMatchObject({
+    expect(result.current).toStrictEqualTyped({
       data: {
         character: {
           __typename: "Character",
@@ -6645,6 +6895,7 @@ describe("useSuspenseQuery", () => {
           name: "Doctor Strangecache",
         },
       },
+      dataState: "complete",
       networkStatus: NetworkStatus.ready,
       error: undefined,
     });
@@ -6680,7 +6931,7 @@ describe("useSuspenseQuery", () => {
     // `console.log` statement to the `handleNext` function in `QueryReference`.
     // expect(renders.count).toBe(4);
     // expect(renders.suspenseCount).toBe(1);
-    // expect(renders.frames).toMatchObject([
+    // expect(renders.frames).toStrictEqualTyped([
     //   {
     //     data: {
     //       character: {
@@ -6774,7 +7025,7 @@ describe("useSuspenseQuery", () => {
       }
     );
 
-    expect(result.current).toMatchObject({
+    expect(result.current).toStrictEqualTyped({
       data: {
         character: {
           __typename: "Character",
@@ -6782,6 +7033,7 @@ describe("useSuspenseQuery", () => {
           name: "Doctor Strangecache",
         },
       },
+      dataState: "complete",
       networkStatus: NetworkStatus.ready,
       error: undefined,
     });
@@ -6791,7 +7043,7 @@ describe("useSuspenseQuery", () => {
     expect(renders.suspenseCount).toBe(1);
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: {
           character: {
             __typename: "Character",
@@ -6799,6 +7051,7 @@ describe("useSuspenseQuery", () => {
             name: "Hulk",
           },
         },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -6810,12 +7063,12 @@ describe("useSuspenseQuery", () => {
       void result.current.refetch();
     });
 
-    const expectedError = new ApolloError({
-      graphQLErrors: [new GraphQLError("oops")],
+    const expectedError = new CombinedGraphQLErrors({
+      errors: [{ message: "oops" }],
     });
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: {
           character: {
             __typename: "Character",
@@ -6823,6 +7076,7 @@ describe("useSuspenseQuery", () => {
             name: "Doctor Strangecache",
           },
         },
+        dataState: "complete",
         networkStatus: NetworkStatus.error,
         error: expectedError,
       });
@@ -6876,8 +7130,9 @@ describe("useSuspenseQuery", () => {
     );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         ...mocks[0].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -6888,8 +7143,9 @@ describe("useSuspenseQuery", () => {
     });
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         ...mocks[1].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -6900,8 +7156,9 @@ describe("useSuspenseQuery", () => {
     });
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         ...mocks[2].result,
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -6928,7 +7185,7 @@ describe("useSuspenseQuery", () => {
 
     const { result, renders } = await renderSuspenseHook(
       () => useSuspenseQuery(query),
-      { link }
+      { link, incrementalHandler: new Defer20220824Handler() }
     );
 
     expect(renders.suspenseCount).toBe(1);
@@ -6941,30 +7198,36 @@ describe("useSuspenseQuery", () => {
     });
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
-        data: { greeting: { message: "Hello world", __typename: "Greeting" } },
-        networkStatus: NetworkStatus.ready,
+      expect(result.current).toStrictEqualTyped({
+        data: markAsStreaming({
+          greeting: { message: "Hello world", __typename: "Greeting" },
+        }),
+        dataState: "streaming",
+        networkStatus: NetworkStatus.streaming,
         error: undefined,
       });
     });
 
-    link.simulateResult({
-      result: {
-        incremental: [
-          {
-            data: {
-              recipient: { name: "Alice", __typename: "Person" },
-              __typename: "Greeting",
+    link.simulateResult(
+      {
+        result: {
+          incremental: [
+            {
+              data: {
+                recipient: { name: "Alice", __typename: "Person" },
+                __typename: "Greeting",
+              },
+              path: ["greeting"],
             },
-            path: ["greeting"],
-          },
-        ],
-        hasNext: false,
+          ],
+          hasNext: false,
+        },
       },
-    });
+      true
+    );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: {
           greeting: {
             __typename: "Greeting",
@@ -6972,6 +7235,7 @@ describe("useSuspenseQuery", () => {
             recipient: { __typename: "Person", name: "Alice" },
           },
         },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -6979,10 +7243,13 @@ describe("useSuspenseQuery", () => {
 
     expect(renders.count).toBe(3 + (IS_REACT_19 ? renders.suspenseCount : 0));
     expect(renders.suspenseCount).toBe(1);
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
-        data: { greeting: { message: "Hello world", __typename: "Greeting" } },
-        networkStatus: NetworkStatus.ready,
+        data: markAsStreaming({
+          greeting: { message: "Hello world", __typename: "Greeting" },
+        }),
+        dataState: "streaming",
+        networkStatus: NetworkStatus.streaming,
         error: undefined,
       },
       {
@@ -6993,13 +7260,14 @@ describe("useSuspenseQuery", () => {
             recipient: { __typename: "Person", name: "Alice" },
           },
         },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
     ]);
   });
 
-  it.each<SuspenseQueryHookFetchPolicy>([
+  it.each<useSuspenseQuery.FetchPolicy>([
     "cache-first",
     "network-only",
     "no-cache",
@@ -7024,7 +7292,7 @@ describe("useSuspenseQuery", () => {
 
       const { result, renders } = await renderSuspenseHook(
         () => useSuspenseQuery(query, { fetchPolicy }),
-        { link }
+        { link, incrementalHandler: new Defer20220824Handler() }
       );
 
       expect(renders.suspenseCount).toBe(1);
@@ -7039,32 +7307,36 @@ describe("useSuspenseQuery", () => {
       });
 
       await waitFor(() => {
-        expect(result.current).toMatchObject({
-          data: {
+        expect(result.current).toStrictEqualTyped({
+          data: markAsStreaming({
             greeting: { message: "Hello world", __typename: "Greeting" },
-          },
-          networkStatus: NetworkStatus.ready,
+          }),
+          dataState: "streaming",
+          networkStatus: NetworkStatus.streaming,
           error: undefined,
         });
       });
 
-      link.simulateResult({
-        result: {
-          incremental: [
-            {
-              data: {
-                recipient: { name: "Alice", __typename: "Person" },
-                __typename: "Greeting",
+      link.simulateResult(
+        {
+          result: {
+            incremental: [
+              {
+                data: {
+                  recipient: { name: "Alice", __typename: "Person" },
+                  __typename: "Greeting",
+                },
+                path: ["greeting"],
               },
-              path: ["greeting"],
-            },
-          ],
-          hasNext: false,
+            ],
+            hasNext: false,
+          },
         },
-      });
+        true
+      );
 
       await waitFor(() => {
-        expect(result.current).toMatchObject({
+        expect(result.current).toStrictEqualTyped({
           data: {
             greeting: {
               __typename: "Greeting",
@@ -7072,6 +7344,7 @@ describe("useSuspenseQuery", () => {
               recipient: { __typename: "Person", name: "Alice" },
             },
           },
+          dataState: "complete",
           networkStatus: NetworkStatus.ready,
           error: undefined,
         });
@@ -7079,12 +7352,13 @@ describe("useSuspenseQuery", () => {
 
       expect(renders.count).toBe(3 + (IS_REACT_19 ? renders.suspenseCount : 0));
       expect(renders.suspenseCount).toBe(1);
-      expect(renders.frames).toMatchObject([
+      expect(renders.frames).toStrictEqualTyped([
         {
-          data: {
+          data: markAsStreaming({
             greeting: { message: "Hello world", __typename: "Greeting" },
-          },
-          networkStatus: NetworkStatus.ready,
+          }),
+          dataState: "streaming",
+          networkStatus: NetworkStatus.streaming,
           error: undefined,
         },
         {
@@ -7095,6 +7369,7 @@ describe("useSuspenseQuery", () => {
               recipient: { __typename: "Person", name: "Alice" },
             },
           },
+          dataState: "complete",
           networkStatus: NetworkStatus.ready,
           error: undefined,
         },
@@ -7131,10 +7406,10 @@ describe("useSuspenseQuery", () => {
 
     const { result, renders } = await renderSuspenseHook(
       () => useSuspenseQuery(query, { fetchPolicy: "cache-first" }),
-      { cache }
+      { cache, incrementalHandler: new Defer20220824Handler() }
     );
 
-    expect(result.current).toMatchObject({
+    expect(result.current).toStrictEqualTyped({
       data: {
         greeting: {
           message: "Hello world",
@@ -7142,12 +7417,13 @@ describe("useSuspenseQuery", () => {
           recipient: { __typename: "Person", name: "Alice" },
         },
       },
+      dataState: "complete",
       networkStatus: NetworkStatus.ready,
       error: undefined,
     });
 
     expect(renders.suspenseCount).toBe(0);
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
         data: {
           greeting: {
@@ -7156,6 +7432,7 @@ describe("useSuspenseQuery", () => {
             recipient: { __typename: "Person", name: "Alice" },
           },
         },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -7179,7 +7456,7 @@ describe("useSuspenseQuery", () => {
     const link = new MockSubscriptionLink();
     const cache = new InMemoryCache();
 
-    // We are intentionally writing partial data to the cache. Supress console
+    // We are intentionally writing partial data to the cache. Suppress console
     // warnings to avoid unnecessary noise in the test.
     {
       using _consoleSpy = spyOnConsole("error");
@@ -7200,16 +7477,17 @@ describe("useSuspenseQuery", () => {
           fetchPolicy: "cache-first",
           returnPartialData: true,
         }),
-      { cache, link }
+      { cache, link, incrementalHandler: new Defer20220824Handler() }
     );
 
-    expect(result.current).toMatchObject({
+    expect(result.current).toStrictEqualTyped({
       data: {
         greeting: {
           __typename: "Greeting",
           recipient: { __typename: "Person", name: "Cached Alice" },
         },
       },
+      dataState: "partial",
       networkStatus: NetworkStatus.loading,
       error: undefined,
     });
@@ -7222,36 +7500,40 @@ describe("useSuspenseQuery", () => {
     });
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
-        data: {
+      expect(result.current).toStrictEqualTyped({
+        data: markAsStreaming({
           greeting: {
             __typename: "Greeting",
             message: "Hello world",
             recipient: { __typename: "Person", name: "Cached Alice" },
           },
-        },
-        networkStatus: NetworkStatus.ready,
+        }),
+        dataState: "streaming",
+        networkStatus: NetworkStatus.streaming,
         error: undefined,
       });
     });
 
-    link.simulateResult({
-      result: {
-        incremental: [
-          {
-            data: {
-              __typename: "Greeting",
-              recipient: { name: "Alice", __typename: "Person" },
+    link.simulateResult(
+      {
+        result: {
+          incremental: [
+            {
+              data: {
+                __typename: "Greeting",
+                recipient: { name: "Alice", __typename: "Person" },
+              },
+              path: ["greeting"],
             },
-            path: ["greeting"],
-          },
-        ],
-        hasNext: false,
+          ],
+          hasNext: false,
+        },
       },
-    });
+      true
+    );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: {
           greeting: {
             __typename: "Greeting",
@@ -7259,6 +7541,7 @@ describe("useSuspenseQuery", () => {
             recipient: { __typename: "Person", name: "Alice" },
           },
         },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -7266,7 +7549,7 @@ describe("useSuspenseQuery", () => {
 
     expect(renders.count).toBe(3 + (IS_REACT_19 ? renders.suspenseCount : 0));
     expect(renders.suspenseCount).toBe(0);
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
         data: {
           greeting: {
@@ -7274,18 +7557,20 @@ describe("useSuspenseQuery", () => {
             recipient: { __typename: "Person", name: "Cached Alice" },
           },
         },
+        dataState: "partial",
         networkStatus: NetworkStatus.loading,
         error: undefined,
       },
       {
-        data: {
+        data: markAsStreaming({
           greeting: {
             __typename: "Greeting",
             message: "Hello world",
             recipient: { __typename: "Person", name: "Cached Alice" },
           },
-        },
-        networkStatus: NetworkStatus.ready,
+        }),
+        dataState: "streaming",
+        networkStatus: NetworkStatus.streaming,
         error: undefined,
       },
       {
@@ -7296,6 +7581,7 @@ describe("useSuspenseQuery", () => {
             recipient: { __typename: "Person", name: "Alice" },
           },
         },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -7318,7 +7604,11 @@ describe("useSuspenseQuery", () => {
 
     const link = new MockSubscriptionLink();
     const cache = new InMemoryCache();
-    const client = new ApolloClient({ cache, link });
+    const client = new ApolloClient({
+      cache,
+      link,
+      incrementalHandler: new Defer20220824Handler(),
+    });
 
     cache.writeQuery({
       query,
@@ -7336,7 +7626,7 @@ describe("useSuspenseQuery", () => {
       { client }
     );
 
-    expect(result.current).toMatchObject({
+    expect(result.current).toStrictEqualTyped({
       data: {
         greeting: {
           message: "Hello cached",
@@ -7344,6 +7634,7 @@ describe("useSuspenseQuery", () => {
           recipient: { __typename: "Person", name: "Cached Alice" },
         },
       },
+      dataState: "complete",
       networkStatus: NetworkStatus.loading,
       error: undefined,
     });
@@ -7356,36 +7647,40 @@ describe("useSuspenseQuery", () => {
     });
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
-        data: {
+      expect(result.current).toStrictEqualTyped({
+        data: markAsStreaming({
           greeting: {
             __typename: "Greeting",
             message: "Hello world",
             recipient: { __typename: "Person", name: "Cached Alice" },
           },
-        },
-        networkStatus: NetworkStatus.ready,
+        }),
+        dataState: "streaming",
+        networkStatus: NetworkStatus.streaming,
         error: undefined,
       });
     });
 
-    link.simulateResult({
-      result: {
-        incremental: [
-          {
-            data: {
-              recipient: { name: "Alice", __typename: "Person" },
-              __typename: "Greeting",
+    link.simulateResult(
+      {
+        result: {
+          incremental: [
+            {
+              data: {
+                recipient: { name: "Alice", __typename: "Person" },
+                __typename: "Greeting",
+              },
+              path: ["greeting"],
             },
-            path: ["greeting"],
-          },
-        ],
-        hasNext: false,
+          ],
+          hasNext: false,
+        },
       },
-    });
+      true
+    );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: {
           greeting: {
             __typename: "Greeting",
@@ -7393,6 +7688,7 @@ describe("useSuspenseQuery", () => {
             recipient: { __typename: "Person", name: "Alice" },
           },
         },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -7400,7 +7696,7 @@ describe("useSuspenseQuery", () => {
 
     expect(renders.count).toBe(3 + (IS_REACT_19 ? renders.suspenseCount : 0));
     expect(renders.suspenseCount).toBe(0);
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
         data: {
           greeting: {
@@ -7409,18 +7705,20 @@ describe("useSuspenseQuery", () => {
             recipient: { __typename: "Person", name: "Cached Alice" },
           },
         },
+        dataState: "complete",
         networkStatus: NetworkStatus.loading,
         error: undefined,
       },
       {
-        data: {
+        data: markAsStreaming({
           greeting: {
             __typename: "Greeting",
             message: "Hello world",
             recipient: { __typename: "Person", name: "Cached Alice" },
           },
-        },
-        networkStatus: NetworkStatus.ready,
+        }),
+        dataState: "streaming",
+        networkStatus: NetworkStatus.streaming,
         error: undefined,
       },
       {
@@ -7431,6 +7729,7 @@ describe("useSuspenseQuery", () => {
             recipient: { __typename: "Person", name: "Alice" },
           },
         },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -7455,7 +7754,7 @@ describe("useSuspenseQuery", () => {
 
     const { result, renders } = await renderSuspenseHook(
       () => useSuspenseQuery(query),
-      { link }
+      { link, incrementalHandler: new Defer20220824Handler() }
     );
 
     expect(renders.suspenseCount).toBe(1);
@@ -7473,14 +7772,15 @@ describe("useSuspenseQuery", () => {
     });
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
-        data: {
+      expect(result.current).toStrictEqualTyped({
+        data: markAsStreaming({
           greetings: [
             { __typename: "Greeting", message: "Hello world" },
             { __typename: "Greeting", message: "Hello again" },
           ],
-        },
-        networkStatus: NetworkStatus.ready,
+        }),
+        dataState: "streaming",
+        networkStatus: NetworkStatus.streaming,
         error: undefined,
       });
     });
@@ -7501,8 +7801,8 @@ describe("useSuspenseQuery", () => {
     });
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
-        data: {
+      expect(result.current).toStrictEqualTyped({
+        data: markAsStreaming({
           greetings: [
             {
               __typename: "Greeting",
@@ -7514,29 +7814,33 @@ describe("useSuspenseQuery", () => {
               message: "Hello again",
             },
           ],
-        },
-        networkStatus: NetworkStatus.ready,
+        }),
+        dataState: "streaming",
+        networkStatus: NetworkStatus.streaming,
         error: undefined,
       });
     });
 
-    link.simulateResult({
-      result: {
-        incremental: [
-          {
-            data: {
-              __typename: "Greeting",
-              recipient: { __typename: "Person", name: "Bob" },
+    link.simulateResult(
+      {
+        result: {
+          incremental: [
+            {
+              data: {
+                __typename: "Greeting",
+                recipient: { __typename: "Person", name: "Bob" },
+              },
+              path: ["greetings", 1],
             },
-            path: ["greetings", 1],
-          },
-        ],
-        hasNext: false,
+          ],
+          hasNext: false,
+        },
       },
-    });
+      true
+    );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: {
           greetings: [
             {
@@ -7551,6 +7855,7 @@ describe("useSuspenseQuery", () => {
             },
           ],
         },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -7558,19 +7863,20 @@ describe("useSuspenseQuery", () => {
 
     expect(renders.count).toBe(4 + (IS_REACT_19 ? renders.suspenseCount : 0));
     expect(renders.suspenseCount).toBe(1);
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
-        data: {
+        data: markAsStreaming({
           greetings: [
             { __typename: "Greeting", message: "Hello world" },
             { __typename: "Greeting", message: "Hello again" },
           ],
-        },
-        networkStatus: NetworkStatus.ready,
+        }),
+        dataState: "streaming",
+        networkStatus: NetworkStatus.streaming,
         error: undefined,
       },
       {
-        data: {
+        data: markAsStreaming({
           greetings: [
             {
               __typename: "Greeting",
@@ -7582,8 +7888,9 @@ describe("useSuspenseQuery", () => {
               message: "Hello again",
             },
           ],
-        },
-        networkStatus: NetworkStatus.ready,
+        }),
+        dataState: "streaming",
+        networkStatus: NetworkStatus.streaming,
         error: undefined,
       },
       {
@@ -7601,6 +7908,7 @@ describe("useSuspenseQuery", () => {
             },
           ],
         },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -7629,7 +7937,7 @@ describe("useSuspenseQuery", () => {
 
     const { result, renders } = await renderSuspenseHook(
       () => useSuspenseQuery(query),
-      { link }
+      { link, incrementalHandler: new Defer20220824Handler() }
     );
 
     expect(renders.suspenseCount).toBe(1);
@@ -7661,8 +7969,8 @@ describe("useSuspenseQuery", () => {
     });
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
-        data: {
+      expect(result.current).toStrictEqualTyped({
+        data: markAsStreaming({
           allProducts: [
             {
               __typename: "Product",
@@ -7681,8 +7989,9 @@ describe("useSuspenseQuery", () => {
               sku: "studio",
             },
           ],
-        },
-        networkStatus: NetworkStatus.ready,
+        }),
+        dataState: "streaming",
+        networkStatus: NetworkStatus.streaming,
         error: undefined,
       });
     });
@@ -7712,8 +8021,8 @@ describe("useSuspenseQuery", () => {
     });
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
-        data: {
+      expect(result.current).toStrictEqualTyped({
+        data: markAsStreaming({
           allProducts: [
             {
               __typename: "Product",
@@ -7736,8 +8045,9 @@ describe("useSuspenseQuery", () => {
               sku: "studio",
             },
           ],
-        },
-        networkStatus: NetworkStatus.ready,
+        }),
+        dataState: "streaming",
+        networkStatus: NetworkStatus.streaming,
         error: undefined,
       });
     });
@@ -7759,7 +8069,11 @@ describe("useSuspenseQuery", () => {
 
     const cache = new InMemoryCache();
     const link = new MockSubscriptionLink();
-    const client = new ApolloClient({ link, cache });
+    const client = new ApolloClient({
+      link,
+      cache,
+      incrementalHandler: new Defer20220824Handler(),
+    });
 
     const { result, renders } = await renderSuspenseHook(
       () => useSuspenseQuery(query),
@@ -7774,14 +8088,15 @@ describe("useSuspenseQuery", () => {
     });
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
-        data: {
+      expect(result.current).toStrictEqualTyped({
+        data: markAsStreaming({
           greeting: {
             __typename: "Greeting",
             message: "Hello world",
           },
-        },
-        networkStatus: NetworkStatus.ready,
+        }),
+        dataState: "streaming",
+        networkStatus: NetworkStatus.streaming,
         error: undefined,
       });
     });
@@ -7804,7 +8119,7 @@ describe("useSuspenseQuery", () => {
     );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: {
           greeting: {
             __typename: "Greeting",
@@ -7815,12 +8130,13 @@ describe("useSuspenseQuery", () => {
             },
           },
         },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
     });
 
-    let refetchPromise: Promise<ApolloQueryResult<unknown>>;
+    let refetchPromise: Promise<ApolloClient.QueryResult<unknown>>;
     await actAsync(async () => {
       refetchPromise = result.current.refetch();
     });
@@ -7838,8 +8154,8 @@ describe("useSuspenseQuery", () => {
     });
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
-        data: {
+      expect(result.current).toStrictEqualTyped({
+        data: markAsStreaming({
           greeting: {
             __typename: "Greeting",
             message: "Goodbye",
@@ -7848,8 +8164,9 @@ describe("useSuspenseQuery", () => {
               name: "Alice",
             },
           },
-        },
-        networkStatus: NetworkStatus.ready,
+        }),
+        dataState: "streaming",
+        networkStatus: NetworkStatus.streaming,
         error: undefined,
       });
     });
@@ -7872,7 +8189,7 @@ describe("useSuspenseQuery", () => {
     );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: {
           greeting: {
             __typename: "Greeting",
@@ -7883,12 +8200,13 @@ describe("useSuspenseQuery", () => {
             },
           },
         },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
     });
 
-    await expect(refetchPromise!).resolves.toEqual({
+    await expect(refetchPromise!).resolves.toStrictEqualTyped({
       data: {
         greeting: {
           __typename: "Greeting",
@@ -7899,22 +8217,20 @@ describe("useSuspenseQuery", () => {
           },
         },
       },
-      loading: false,
-      networkStatus: NetworkStatus.ready,
-      error: undefined,
     });
 
     expect(renders.count).toBe(6 + (IS_REACT_19 ? renders.suspenseCount : 0));
     expect(renders.suspenseCount).toBe(2);
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
-        data: {
+        data: markAsStreaming({
           greeting: {
             __typename: "Greeting",
             message: "Hello world",
           },
-        },
-        networkStatus: NetworkStatus.ready,
+        }),
+        dataState: "streaming",
+        networkStatus: NetworkStatus.streaming,
         error: undefined,
       },
       {
@@ -7928,11 +8244,12 @@ describe("useSuspenseQuery", () => {
             },
           },
         },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
       {
-        data: {
+        data: markAsStreaming({
           greeting: {
             __typename: "Greeting",
             message: "Goodbye",
@@ -7941,8 +8258,9 @@ describe("useSuspenseQuery", () => {
               name: "Alice",
             },
           },
-        },
-        networkStatus: NetworkStatus.ready,
+        }),
+        dataState: "streaming",
+        networkStatus: NetworkStatus.streaming,
         error: undefined,
       },
       {
@@ -7956,6 +8274,7 @@ describe("useSuspenseQuery", () => {
             },
           },
         },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -7978,15 +8297,20 @@ describe("useSuspenseQuery", () => {
 
     const cache = new InMemoryCache();
     const link = new MockSubscriptionLink();
-    const client = new ApolloClient({ link, cache });
+    const client = new ApolloClient({
+      link,
+      cache,
+      incrementalHandler: new Defer20220824Handler(),
+    });
 
     const { result, rerenderAsync, renders } = await renderSuspenseHook(
       ({ skip }) => useSuspenseQuery(query, { skip }),
       { client, initialProps: { skip: true } }
     );
 
-    expect(result.current).toMatchObject({
+    expect(result.current).toStrictEqualTyped({
       data: undefined,
+      dataState: "empty",
       networkStatus: NetworkStatus.ready,
       error: undefined,
     });
@@ -8003,14 +8327,15 @@ describe("useSuspenseQuery", () => {
     });
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
-        data: {
+      expect(result.current).toStrictEqualTyped({
+        data: markAsStreaming({
           greeting: {
             __typename: "Greeting",
             message: "Hello world",
           },
-        },
-        networkStatus: NetworkStatus.ready,
+        }),
+        dataState: "streaming",
+        networkStatus: NetworkStatus.streaming,
         error: undefined,
       });
     });
@@ -8033,7 +8358,7 @@ describe("useSuspenseQuery", () => {
     );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: {
           greeting: {
             __typename: "Greeting",
@@ -8044,6 +8369,7 @@ describe("useSuspenseQuery", () => {
             },
           },
         },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -8051,16 +8377,22 @@ describe("useSuspenseQuery", () => {
 
     expect(renders.count).toBe(4 + (IS_REACT_19 ? renders.suspenseCount : 0));
     expect(renders.suspenseCount).toBe(1);
-    expect(renders.frames).toMatchObject([
-      { data: undefined, networkStatus: NetworkStatus.ready, error: undefined },
+    expect(renders.frames).toStrictEqualTyped([
       {
-        data: {
+        data: undefined,
+        dataState: "empty",
+        networkStatus: NetworkStatus.ready,
+        error: undefined,
+      },
+      {
+        data: markAsStreaming({
           greeting: {
             __typename: "Greeting",
             message: "Hello world",
           },
-        },
-        networkStatus: NetworkStatus.ready,
+        }),
+        dataState: "streaming",
+        networkStatus: NetworkStatus.streaming,
         error: undefined,
       },
       {
@@ -8074,6 +8406,7 @@ describe("useSuspenseQuery", () => {
             },
           },
         },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -8086,7 +8419,7 @@ describe("useSuspenseQuery", () => {
   // This test reflects the behavior as it exists today, but will need
   // to be updated once the core bug is fixed.
   //
-  // NOTE: A duplicate it.failng test has been added right below this one with
+  // NOTE: A duplicate it.failing test has been added right below this one with
   // the expected behavior added in (i.e. the commented code in this test). Once
   // the core bug is fixed, this test can be removed in favor of the other test.
   //
@@ -8115,7 +8448,11 @@ describe("useSuspenseQuery", () => {
       },
     });
     const link = new MockSubscriptionLink();
-    const client = new ApolloClient({ link, cache });
+    const client = new ApolloClient({
+      link,
+      cache,
+      incrementalHandler: new Defer20220824Handler(),
+    });
 
     const { result, renders } = await renderSuspenseHook(
       () => useSuspenseQuery(query, { variables: { offset: 0 } }),
@@ -8132,16 +8469,17 @@ describe("useSuspenseQuery", () => {
     });
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
-        data: {
+      expect(result.current).toStrictEqualTyped({
+        data: markAsStreaming({
           greetings: [
             {
               __typename: "Greeting",
               message: "Hello world",
             },
           ],
-        },
-        networkStatus: NetworkStatus.ready,
+        }),
+        dataState: "streaming",
+        networkStatus: NetworkStatus.streaming,
         error: undefined,
       });
     });
@@ -8164,7 +8502,7 @@ describe("useSuspenseQuery", () => {
     );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: {
           greetings: [
             {
@@ -8177,12 +8515,13 @@ describe("useSuspenseQuery", () => {
             },
           ],
         },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
     });
 
-    let fetchMorePromise: Promise<ApolloQueryResult<unknown>>;
+    let fetchMorePromise: Promise<ApolloClient.QueryResult<unknown>>;
     await actAsync(() => {
       fetchMorePromise = result.current.fetchMore({ variables: { offset: 1 } });
     });
@@ -8203,7 +8542,7 @@ describe("useSuspenseQuery", () => {
 
     // TODO: Re-enable once the core bug is fixed
     // await waitFor(() => {
-    //   expect(result.current).toMatchObject({
+    //   expect(result.current).toStrictEqualTyped({
     //     data: {
     //       greetings: [
     //         {
@@ -8220,7 +8559,8 @@ describe("useSuspenseQuery", () => {
     //         },
     //       ],
     //     },
-    //     networkStatus: NetworkStatus.ready,
+    //     dataState: "streaming",
+    //     networkStatus: NetworkStatus.streaming,
     //     error: undefined,
     //   });
     // });
@@ -8243,7 +8583,7 @@ describe("useSuspenseQuery", () => {
     );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: {
           greetings: [
             {
@@ -8264,12 +8604,13 @@ describe("useSuspenseQuery", () => {
             },
           ],
         },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
     });
 
-    await expect(fetchMorePromise!).resolves.toEqual({
+    await expect(fetchMorePromise!).resolves.toStrictEqualTyped({
       data: {
         greetings: [
           {
@@ -8282,24 +8623,22 @@ describe("useSuspenseQuery", () => {
           },
         ],
       },
-      loading: false,
-      networkStatus: NetworkStatus.ready,
-      error: undefined,
     });
 
     expect(renders.count).toBe(5 + (IS_REACT_19 ? renders.suspenseCount : 0));
     expect(renders.suspenseCount).toBe(2);
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
-        data: {
+        data: markAsStreaming({
           greetings: [
             {
               __typename: "Greeting",
               message: "Hello world",
             },
           ],
-        },
-        networkStatus: NetworkStatus.ready,
+        }),
+        dataState: "streaming",
+        networkStatus: NetworkStatus.streaming,
         error: undefined,
       },
       {
@@ -8315,6 +8654,7 @@ describe("useSuspenseQuery", () => {
             },
           ],
         },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -8336,7 +8676,8 @@ describe("useSuspenseQuery", () => {
       //       },
       //     ],
       //   },
-      //   networkStatus: NetworkStatus.ready,
+      //   dataState: "streaming",
+      //   networkStatus: NetworkStatus.streaming,
       //   error: undefined,
       // },
       {
@@ -8360,6 +8701,7 @@ describe("useSuspenseQuery", () => {
             },
           ],
         },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -8397,7 +8739,11 @@ describe("useSuspenseQuery", () => {
         },
       });
       const link = new MockSubscriptionLink();
-      const client = new ApolloClient({ link, cache });
+      const client = new ApolloClient({
+        link,
+        cache,
+        incrementalHandler: new Defer20220824Handler(),
+      });
 
       const { result, renders } = await renderSuspenseHook(
         () => useSuspenseQuery(query, { variables: { offset: 0 } }),
@@ -8414,16 +8760,17 @@ describe("useSuspenseQuery", () => {
       });
 
       await waitFor(() => {
-        expect(result.current).toMatchObject({
-          data: {
+        expect(result.current).toStrictEqualTyped({
+          data: markAsStreaming({
             greetings: [
               {
                 __typename: "Greeting",
                 message: "Hello world",
               },
             ],
-          },
-          networkStatus: NetworkStatus.ready,
+          }),
+          dataState: "streaming",
+          networkStatus: NetworkStatus.streaming,
           error: undefined,
         });
       });
@@ -8446,7 +8793,7 @@ describe("useSuspenseQuery", () => {
       );
 
       await waitFor(() => {
-        expect(result.current).toMatchObject({
+        expect(result.current).toStrictEqualTyped({
           data: {
             greetings: [
               {
@@ -8459,12 +8806,13 @@ describe("useSuspenseQuery", () => {
               },
             ],
           },
+          dataState: "complete",
           networkStatus: NetworkStatus.ready,
           error: undefined,
         });
       });
 
-      let fetchMorePromise: Promise<ApolloQueryResult<unknown>>;
+      let fetchMorePromise: Promise<ApolloClient.QueryResult<unknown>>;
       await actAsync(() => {
         fetchMorePromise = result.current.fetchMore({
           variables: { offset: 1 },
@@ -8486,8 +8834,8 @@ describe("useSuspenseQuery", () => {
       });
 
       await waitFor(() => {
-        expect(result.current).toMatchObject({
-          data: {
+        expect(result.current).toStrictEqualTyped({
+          data: markAsStreaming({
             greetings: [
               {
                 __typename: "Greeting",
@@ -8502,8 +8850,9 @@ describe("useSuspenseQuery", () => {
                 message: "Goodbye",
               },
             ],
-          },
-          networkStatus: NetworkStatus.ready,
+          }),
+          dataState: "streaming",
+          networkStatus: NetworkStatus.streaming,
           error: undefined,
         });
       });
@@ -8526,7 +8875,7 @@ describe("useSuspenseQuery", () => {
       );
 
       await waitFor(() => {
-        expect(result.current).toMatchObject({
+        expect(result.current).toStrictEqualTyped({
           data: {
             greetings: [
               {
@@ -8547,6 +8896,7 @@ describe("useSuspenseQuery", () => {
               },
             ],
           },
+          dataState: "complete",
           networkStatus: NetworkStatus.ready,
           error: undefined,
         });
@@ -8572,17 +8922,18 @@ describe("useSuspenseQuery", () => {
 
       expect(renders.count).toBe(5 + (IS_REACT_19 ? renders.suspenseCount : 0));
       expect(renders.suspenseCount).toBe(2);
-      expect(renders.frames).toMatchObject([
+      expect(renders.frames).toStrictEqualTyped([
         {
-          data: {
+          data: markAsStreaming({
             greetings: [
               {
                 __typename: "Greeting",
                 message: "Hello world",
               },
             ],
-          },
-          networkStatus: NetworkStatus.ready,
+          }),
+          dataState: "streaming",
+          networkStatus: NetworkStatus.streaming,
           error: undefined,
         },
         {
@@ -8598,11 +8949,12 @@ describe("useSuspenseQuery", () => {
               },
             ],
           },
+          dataState: "complete",
           networkStatus: NetworkStatus.ready,
           error: undefined,
         },
         {
-          data: {
+          data: markAsStreaming({
             greetings: [
               {
                 __typename: "Greeting",
@@ -8617,8 +8969,9 @@ describe("useSuspenseQuery", () => {
                 message: "Goodbye",
               },
             ],
-          },
-          networkStatus: NetworkStatus.ready,
+          }),
+          dataState: "streaming",
+          networkStatus: NetworkStatus.streaming,
           error: undefined,
         },
         {
@@ -8642,6 +8995,7 @@ describe("useSuspenseQuery", () => {
               },
             ],
           },
+          dataState: "complete",
           networkStatus: NetworkStatus.ready,
           error: undefined,
         },
@@ -8671,6 +9025,7 @@ describe("useSuspenseQuery", () => {
       () => useSuspenseQuery(query),
       {
         link,
+        incrementalHandler: new Defer20220824Handler(),
       }
     );
 
@@ -8684,11 +9039,10 @@ describe("useSuspenseQuery", () => {
     expect(renders.suspenseCount).toBe(1);
     expect(renders.frames).toEqual([]);
 
-    const [error] = renders.errors as ApolloError[];
+    const [error] = renders.errors;
 
-    expect(error).toBeInstanceOf(ApolloError);
-    expect(error.networkError).toEqual(new Error("Could not fetch"));
-    expect(error.graphQLErrors).toEqual([]);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).toEqual(new Error("Could not fetch"));
   });
 
   it("throws graphql errors returned by deferred queries", async () => {
@@ -8713,6 +9067,7 @@ describe("useSuspenseQuery", () => {
       () => useSuspenseQuery(query),
       {
         link,
+        incrementalHandler: new Defer20220824Handler(),
       }
     );
 
@@ -8728,13 +9083,14 @@ describe("useSuspenseQuery", () => {
     expect(renders.suspenseCount).toBe(1);
     expect(renders.frames).toEqual([]);
 
-    const [error] = renders.errors as ApolloError[];
+    const [error] = renders.errors;
 
-    expect(error).toBeInstanceOf(ApolloError);
-    expect(error.networkError).toBeNull();
-    expect(error.graphQLErrors).toEqual([
-      new GraphQLError("Could not fetch greeting"),
-    ]);
+    expect(error).toBeInstanceOf(CombinedGraphQLErrors);
+    expect(error).toEqual(
+      new CombinedGraphQLErrors({
+        errors: [{ message: "Could not fetch greeting" }],
+      })
+    );
   });
 
   it("throws errors returned by deferred queries that include partial data", async () => {
@@ -8759,6 +9115,7 @@ describe("useSuspenseQuery", () => {
       () => useSuspenseQuery(query),
       {
         link,
+        incrementalHandler: new Defer20220824Handler(),
       }
     );
 
@@ -8775,13 +9132,15 @@ describe("useSuspenseQuery", () => {
     expect(renders.suspenseCount).toBe(1);
     expect(renders.frames).toEqual([]);
 
-    const [error] = renders.errors as ApolloError[];
+    const [error] = renders.errors;
 
-    expect(error).toBeInstanceOf(ApolloError);
-    expect(error.networkError).toBeNull();
-    expect(error.graphQLErrors).toEqual([
-      new GraphQLError("Could not fetch greeting"),
-    ]);
+    expect(error).toBeInstanceOf(CombinedGraphQLErrors);
+    expect(error).toEqual(
+      new CombinedGraphQLErrors({
+        data: { greeting: null },
+        errors: [{ message: "Could not fetch greeting" }],
+      })
+    );
   });
 
   it("discards partial data and throws errors returned in incremental chunks", async () => {
@@ -8806,7 +9165,7 @@ describe("useSuspenseQuery", () => {
 
     const { result, renders } = await renderSuspenseHook(
       () => useSuspenseQuery(query),
-      { link }
+      { link, incrementalHandler: new Defer20220824Handler() }
     );
 
     link.simulateResult({
@@ -8831,8 +9190,8 @@ describe("useSuspenseQuery", () => {
     });
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
-        data: {
+      expect(result.current).toStrictEqualTyped({
+        data: markAsStreaming({
           hero: {
             heroFriends: [
               {
@@ -8846,48 +9205,52 @@ describe("useSuspenseQuery", () => {
             ],
             name: "R2-D2",
           },
-        },
-        networkStatus: NetworkStatus.ready,
+        }),
+        dataState: "streaming",
+        networkStatus: NetworkStatus.streaming,
         error: undefined,
       });
     });
 
-    link.simulateResult({
-      result: {
-        incremental: [
-          {
-            path: ["hero", "heroFriends", 0],
-            errors: [
-              new GraphQLError(
-                "homeWorld for character with ID 1000 could not be fetched.",
-                { path: ["hero", "heroFriends", 0, "homeWorld"] }
-              ),
-            ],
-            data: {
-              homeWorld: null,
+    link.simulateResult(
+      {
+        result: {
+          incremental: [
+            {
+              path: ["hero", "heroFriends", 0],
+              errors: [
+                new GraphQLError(
+                  "homeWorld for character with ID 1000 could not be fetched.",
+                  { path: ["hero", "heroFriends", 0, "homeWorld"] }
+                ),
+              ],
+              data: {
+                homeWorld: null,
+              },
             },
-          },
-          // This chunk is ignored since errorPolicy `none` throws away partial
-          // data
-          {
-            path: ["hero", "heroFriends", 1],
-            data: {
-              homeWorld: "Alderaan",
+            // This chunk is ignored since errorPolicy `none` throws away partial
+            // data
+            {
+              path: ["hero", "heroFriends", 1],
+              data: {
+                homeWorld: "Alderaan",
+              },
             },
-          },
-        ],
-        hasNext: false,
+          ],
+          hasNext: false,
+        },
       },
-    });
+      true
+    );
 
     await waitFor(() => {
       expect(renders.errorCount).toBe(1);
     });
 
     expect(renders.suspenseCount).toBe(1);
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
-        data: {
+        data: markAsStreaming({
           hero: {
             heroFriends: [
               {
@@ -8901,22 +9264,44 @@ describe("useSuspenseQuery", () => {
             ],
             name: "R2-D2",
           },
-        },
-        networkStatus: NetworkStatus.ready,
+        }),
+        dataState: "streaming",
+        networkStatus: NetworkStatus.streaming,
         error: undefined,
       },
     ]);
 
-    const [error] = renders.errors as ApolloError[];
+    const [error] = renders.errors;
 
-    expect(error).toBeInstanceOf(ApolloError);
-    expect(error.networkError).toBeNull();
-    expect(error.graphQLErrors).toEqual([
-      new GraphQLError(
-        "homeWorld for character with ID 1000 could not be fetched.",
-        { path: ["hero", "heroFriends", 0, "homeWorld"] }
-      ),
-    ]);
+    expect(error).toBeInstanceOf(CombinedGraphQLErrors);
+    expect(error).toEqual(
+      new CombinedGraphQLErrors({
+        data: {
+          hero: {
+            heroFriends: [
+              {
+                id: "1000",
+                name: "Luke Skywalker",
+                homeWorld: null,
+              },
+              {
+                id: "1003",
+                name: "Leia Organa",
+                homeWorld: "Alderaan",
+              },
+            ],
+            name: "R2-D2",
+          },
+        },
+        errors: [
+          {
+            message:
+              "homeWorld for character with ID 1000 could not be fetched.",
+            path: ["hero", "heroFriends", 0, "homeWorld"],
+          },
+        ],
+      })
+    );
   });
 
   it("adds partial data and does not throw errors returned in incremental chunks but returns them in `error` property with errorPolicy set to `all`", async () => {
@@ -8939,7 +9324,7 @@ describe("useSuspenseQuery", () => {
 
     const { result, renders } = await renderSuspenseHook(
       () => useSuspenseQuery(query, { errorPolicy: "all" }),
-      { link }
+      { link, incrementalHandler: new Defer20220824Handler() }
     );
 
     link.simulateResult({
@@ -8964,8 +9349,8 @@ describe("useSuspenseQuery", () => {
     });
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
-        data: {
+      expect(result.current).toStrictEqualTyped({
+        data: markAsStreaming({
           hero: {
             heroFriends: [
               {
@@ -8979,42 +9364,46 @@ describe("useSuspenseQuery", () => {
             ],
             name: "R2-D2",
           },
-        },
-        networkStatus: NetworkStatus.ready,
+        }),
+        dataState: "streaming",
+        networkStatus: NetworkStatus.streaming,
         error: undefined,
       });
     });
 
-    link.simulateResult({
-      result: {
-        incremental: [
-          {
-            path: ["hero", "heroFriends", 0],
-            errors: [
-              new GraphQLError(
-                "homeWorld for character with ID 1000 could not be fetched.",
-                { path: ["hero", "heroFriends", 0, "homeWorld"] }
-              ),
-            ],
-            data: {
-              homeWorld: null,
+    link.simulateResult(
+      {
+        result: {
+          incremental: [
+            {
+              path: ["hero", "heroFriends", 0],
+              errors: [
+                new GraphQLError(
+                  "homeWorld for character with ID 1000 could not be fetched.",
+                  { path: ["hero", "heroFriends", 0, "homeWorld"] }
+                ),
+              ],
+              data: {
+                homeWorld: null,
+              },
             },
-          },
-          // Unlike the default (errorPolicy = `none`), this data will be
-          // added to the final result
-          {
-            path: ["hero", "heroFriends", 1],
-            data: {
-              homeWorld: "Alderaan",
+            // Unlike the default (errorPolicy = `none`), this data will be
+            // added to the final result
+            {
+              path: ["hero", "heroFriends", 1],
+              data: {
+                homeWorld: "Alderaan",
+              },
             },
-          },
-        ],
-        hasNext: false,
+          ],
+          hasNext: false,
+        },
       },
-    });
+      true
+    );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: {
           hero: {
             heroFriends: [
@@ -9032,13 +9421,32 @@ describe("useSuspenseQuery", () => {
             name: "R2-D2",
           },
         },
+        dataState: "complete",
         networkStatus: NetworkStatus.error,
-        error: new ApolloError({
-          graphQLErrors: [
-            new GraphQLError(
-              "homeWorld for character with ID 1000 could not be fetched.",
-              { path: ["hero", "heroFriends", 0, "homeWorld"] }
-            ),
+        error: new CombinedGraphQLErrors({
+          data: {
+            hero: {
+              heroFriends: [
+                {
+                  id: "1000",
+                  name: "Luke Skywalker",
+                  homeWorld: null,
+                },
+                {
+                  id: "1003",
+                  name: "Leia Organa",
+                  homeWorld: "Alderaan",
+                },
+              ],
+              name: "R2-D2",
+            },
+          },
+          errors: [
+            {
+              message:
+                "homeWorld for character with ID 1000 could not be fetched.",
+              path: ["hero", "heroFriends", 0, "homeWorld"],
+            },
           ],
         }),
       });
@@ -9046,9 +9454,9 @@ describe("useSuspenseQuery", () => {
 
     expect(renders.count).toBe(3 + (IS_REACT_19 ? renders.suspenseCount : 0));
     expect(renders.suspenseCount).toBe(1);
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
-        data: {
+        data: markAsStreaming({
           hero: {
             heroFriends: [
               {
@@ -9062,8 +9470,9 @@ describe("useSuspenseQuery", () => {
             ],
             name: "R2-D2",
           },
-        },
-        networkStatus: NetworkStatus.ready,
+        }),
+        dataState: "streaming",
+        networkStatus: NetworkStatus.streaming,
         error: undefined,
       },
       {
@@ -9084,13 +9493,32 @@ describe("useSuspenseQuery", () => {
             name: "R2-D2",
           },
         },
+        dataState: "complete",
         networkStatus: NetworkStatus.error,
-        error: new ApolloError({
-          graphQLErrors: [
-            new GraphQLError(
-              "homeWorld for character with ID 1000 could not be fetched.",
-              { path: ["hero", "heroFriends", 0, "homeWorld"] }
-            ),
+        error: new CombinedGraphQLErrors({
+          data: {
+            hero: {
+              heroFriends: [
+                {
+                  id: "1000",
+                  name: "Luke Skywalker",
+                  homeWorld: null,
+                },
+                {
+                  id: "1003",
+                  name: "Leia Organa",
+                  homeWorld: "Alderaan",
+                },
+              ],
+              name: "R2-D2",
+            },
+          },
+          errors: [
+            {
+              message:
+                "homeWorld for character with ID 1000 could not be fetched.",
+              path: ["hero", "heroFriends", 0, "homeWorld"],
+            },
           ],
         }),
       },
@@ -9117,7 +9545,7 @@ describe("useSuspenseQuery", () => {
 
     const { result, renders } = await renderSuspenseHook(
       () => useSuspenseQuery(query, { errorPolicy: "ignore" }),
-      { link }
+      { link, incrementalHandler: new Defer20220824Handler() }
     );
 
     link.simulateResult({
@@ -9142,8 +9570,8 @@ describe("useSuspenseQuery", () => {
     });
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
-        data: {
+      expect(result.current).toStrictEqualTyped({
+        data: markAsStreaming({
           hero: {
             heroFriends: [
               {
@@ -9157,160 +9585,9 @@ describe("useSuspenseQuery", () => {
             ],
             name: "R2-D2",
           },
-        },
-        networkStatus: NetworkStatus.ready,
-        error: undefined,
-      });
-    });
-
-    link.simulateResult({
-      result: {
-        incremental: [
-          {
-            path: ["hero", "heroFriends", 0],
-            errors: [
-              new GraphQLError(
-                "homeWorld for character with ID 1000 could not be fetched.",
-                { path: ["hero", "heroFriends", 0, "homeWorld"] }
-              ),
-            ],
-            data: {
-              homeWorld: null,
-            },
-          },
-          {
-            path: ["hero", "heroFriends", 1],
-            data: {
-              homeWorld: "Alderaan",
-            },
-          },
-        ],
-        hasNext: false,
-      },
-    });
-
-    await waitFor(() => {
-      expect(result.current).toMatchObject({
-        data: {
-          hero: {
-            heroFriends: [
-              {
-                id: "1000",
-                name: "Luke Skywalker",
-                homeWorld: null,
-              },
-              {
-                id: "1003",
-                name: "Leia Organa",
-                homeWorld: "Alderaan",
-              },
-            ],
-            name: "R2-D2",
-          },
-        },
-        networkStatus: NetworkStatus.ready,
-        error: undefined,
-      });
-    });
-
-    expect(renders.count).toBe(3 + (IS_REACT_19 ? renders.suspenseCount : 0));
-    expect(renders.suspenseCount).toBe(1);
-    expect(renders.frames).toMatchObject([
-      {
-        data: {
-          hero: {
-            heroFriends: [
-              {
-                id: "1000",
-                name: "Luke Skywalker",
-              },
-              {
-                id: "1003",
-                name: "Leia Organa",
-              },
-            ],
-            name: "R2-D2",
-          },
-        },
-        networkStatus: NetworkStatus.ready,
-        error: undefined,
-      },
-      {
-        data: {
-          hero: {
-            heroFriends: [
-              {
-                id: "1000",
-                name: "Luke Skywalker",
-                homeWorld: null,
-              },
-              {
-                id: "1003",
-                name: "Leia Organa",
-                homeWorld: "Alderaan",
-              },
-            ],
-            name: "R2-D2",
-          },
-        },
-        networkStatus: NetworkStatus.ready,
-        error: undefined,
-      },
-    ]);
-  });
-
-  it("can refetch and respond to cache updates after encountering an error in an incremental chunk for a deferred query when `errorPolicy` is `all`", async () => {
-    const query = gql`
-      query {
-        hero {
-          name
-          heroFriends {
-            id
-            name
-            ... @defer {
-              homeWorld
-            }
-          }
-        }
-      }
-    `;
-
-    const cache = new InMemoryCache();
-    const link = new MockSubscriptionLink();
-    const client = new ApolloClient({ link, cache });
-
-    const { result, renders } = await renderSuspenseHook(
-      () => useSuspenseQuery(query, { errorPolicy: "all" }),
-      { client }
-    );
-
-    link.simulateResult({
-      result: {
-        data: {
-          hero: {
-            name: "R2-D2",
-            heroFriends: [
-              { id: "1000", name: "Luke Skywalker" },
-              { id: "1003", name: "Leia Organa" },
-            ],
-          },
-        },
-        hasNext: true,
-      },
-    });
-
-    await waitFor(() => {
-      expect(result.current).toMatchObject({
-        data: {
-          hero: {
-            heroFriends: [
-              { id: "1000", name: "Luke Skywalker" },
-              { id: "1003", name: "Leia Organa" },
-            ],
-            name: "R2-D2",
-          },
-        },
-        networkStatus: NetworkStatus.ready,
+        }),
+        dataState: "streaming",
+        networkStatus: NetworkStatus.streaming,
         error: undefined,
       });
     });
@@ -9345,8 +9622,125 @@ describe("useSuspenseQuery", () => {
     );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: {
+          hero: {
+            heroFriends: [
+              {
+                id: "1000",
+                name: "Luke Skywalker",
+                homeWorld: null,
+              },
+              {
+                id: "1003",
+                name: "Leia Organa",
+                homeWorld: "Alderaan",
+              },
+            ],
+            name: "R2-D2",
+          },
+        },
+        dataState: "complete",
+        networkStatus: NetworkStatus.ready,
+        error: undefined,
+      });
+    });
+
+    expect(renders.count).toBe(3 + (IS_REACT_19 ? renders.suspenseCount : 0));
+    expect(renders.suspenseCount).toBe(1);
+    expect(renders.frames).toStrictEqualTyped([
+      {
+        data: markAsStreaming({
+          hero: {
+            heroFriends: [
+              {
+                id: "1000",
+                name: "Luke Skywalker",
+              },
+              {
+                id: "1003",
+                name: "Leia Organa",
+              },
+            ],
+            name: "R2-D2",
+          },
+        }),
+        dataState: "streaming",
+        networkStatus: NetworkStatus.streaming,
+        error: undefined,
+      },
+      {
+        data: {
+          hero: {
+            heroFriends: [
+              {
+                id: "1000",
+                name: "Luke Skywalker",
+                homeWorld: null,
+              },
+              {
+                id: "1003",
+                name: "Leia Organa",
+                homeWorld: "Alderaan",
+              },
+            ],
+            name: "R2-D2",
+          },
+        },
+        dataState: "complete",
+        networkStatus: NetworkStatus.ready,
+        error: undefined,
+      },
+    ]);
+  });
+
+  it("can refetch and respond to cache updates after encountering an error in an incremental chunk for a deferred query when `errorPolicy` is `all`", async () => {
+    const query = gql`
+      query {
+        hero {
+          name
+          heroFriends {
+            id
+            name
+            ... @defer {
+              homeWorld
+            }
+          }
+        }
+      }
+    `;
+
+    const cache = new InMemoryCache();
+    const link = new MockSubscriptionLink();
+    const client = new ApolloClient({
+      link,
+      cache,
+      incrementalHandler: new Defer20220824Handler(),
+    });
+
+    const { result, renders } = await renderSuspenseHook(
+      () => useSuspenseQuery(query, { errorPolicy: "all" }),
+      { client }
+    );
+
+    link.simulateResult({
+      result: {
+        data: {
+          hero: {
+            name: "R2-D2",
+            heroFriends: [
+              { id: "1000", name: "Luke Skywalker" },
+              { id: "1003", name: "Leia Organa" },
+            ],
+          },
+        },
+        hasNext: true,
+      },
+    });
+
+    await waitFor(() => {
+      expect(result.current).toStrictEqualTyped({
+        data: markAsStreaming({
           hero: {
             heroFriends: [
               { id: "1000", name: "Luke Skywalker" },
@@ -9354,20 +9748,77 @@ describe("useSuspenseQuery", () => {
             ],
             name: "R2-D2",
           },
+        }),
+        dataState: "streaming",
+        networkStatus: NetworkStatus.streaming,
+        error: undefined,
+      });
+    });
+
+    link.simulateResult(
+      {
+        result: {
+          incremental: [
+            {
+              path: ["hero", "heroFriends", 0],
+              errors: [
+                new GraphQLError(
+                  "homeWorld for character with ID 1000 could not be fetched.",
+                  { path: ["hero", "heroFriends", 0, "homeWorld"] }
+                ),
+              ],
+              data: {
+                homeWorld: null,
+              },
+            },
+            {
+              path: ["hero", "heroFriends", 1],
+              data: {
+                homeWorld: "Alderaan",
+              },
+            },
+          ],
+          hasNext: false,
         },
+      },
+      true
+    );
+
+    await waitFor(() => {
+      expect(result.current).toStrictEqualTyped({
+        data: {
+          hero: {
+            heroFriends: [
+              { id: "1000", name: "Luke Skywalker", homeWorld: null },
+              { id: "1003", name: "Leia Organa", homeWorld: "Alderaan" },
+            ],
+            name: "R2-D2",
+          },
+        },
+        dataState: "complete",
         networkStatus: NetworkStatus.error,
-        error: new ApolloError({
-          graphQLErrors: [
-            new GraphQLError(
-              "homeWorld for character with ID 1000 could not be fetched.",
-              { path: ["hero", "heroFriends", 0, "homeWorld"] }
-            ),
+        error: new CombinedGraphQLErrors({
+          data: {
+            hero: {
+              heroFriends: [
+                { id: "1000", name: "Luke Skywalker", homeWorld: null },
+                { id: "1003", name: "Leia Organa", homeWorld: "Alderaan" },
+              ],
+              name: "R2-D2",
+            },
+          },
+          errors: [
+            {
+              message:
+                "homeWorld for character with ID 1000 could not be fetched.",
+              path: ["hero", "heroFriends", 0, "homeWorld"],
+            },
           ],
         }),
       });
     });
 
-    let refetchPromise: Promise<ApolloQueryResult<unknown>>;
+    let refetchPromise: Promise<ApolloClient.QueryResult<unknown>>;
     await actAsync(async () => {
       refetchPromise = result.current.refetch();
     });
@@ -9388,17 +9839,18 @@ describe("useSuspenseQuery", () => {
     });
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
-        data: {
+      expect(result.current).toStrictEqualTyped({
+        data: markAsStreaming({
           hero: {
             heroFriends: [
-              { id: "1000", name: "Luke Skywalker" },
-              { id: "1003", name: "Leia Organa" },
+              { id: "1000", name: "Luke Skywalker", homeWorld: null },
+              { id: "1003", name: "Leia Organa", homeWorld: "Alderaan" },
             ],
             name: "R2-D2",
           },
-        },
-        networkStatus: NetworkStatus.ready,
+        }),
+        dataState: "streaming",
+        networkStatus: NetworkStatus.streaming,
         error: undefined,
       });
     });
@@ -9427,7 +9879,7 @@ describe("useSuspenseQuery", () => {
     );
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: {
           hero: {
             heroFriends: [
@@ -9437,12 +9889,13 @@ describe("useSuspenseQuery", () => {
             name: "R2-D2",
           },
         },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
     });
 
-    await expect(refetchPromise!).resolves.toEqual({
+    await expect(refetchPromise!).resolves.toStrictEqualTyped({
       data: {
         hero: {
           heroFriends: [
@@ -9452,12 +9905,9 @@ describe("useSuspenseQuery", () => {
           name: "R2-D2",
         },
       },
-      loading: false,
-      networkStatus: NetworkStatus.ready,
-      error: undefined,
     });
 
-    cache.updateQuery({ query }, (data) => ({
+    cache.updateQuery<any>({ query }, (data) => ({
       hero: {
         ...data.hero,
         name: "C3PO",
@@ -9465,7 +9915,7 @@ describe("useSuspenseQuery", () => {
     }));
 
     await waitFor(() => {
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: {
           hero: {
             heroFriends: [
@@ -9475,6 +9925,7 @@ describe("useSuspenseQuery", () => {
             name: "C3PO",
           },
         },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       });
@@ -9482,9 +9933,9 @@ describe("useSuspenseQuery", () => {
 
     expect(renders.count).toBe(7 + (IS_REACT_19 ? renders.suspenseCount : 0));
     expect(renders.suspenseCount).toBe(2);
-    expect(renders.frames).toMatchObject([
+    expect(renders.frames).toStrictEqualTyped([
       {
-        data: {
+        data: markAsStreaming({
           hero: {
             heroFriends: [
               { id: "1000", name: "Luke Skywalker" },
@@ -9492,41 +9943,54 @@ describe("useSuspenseQuery", () => {
             ],
             name: "R2-D2",
           },
-        },
-        networkStatus: NetworkStatus.ready,
+        }),
+        dataState: "streaming",
+        networkStatus: NetworkStatus.streaming,
         error: undefined,
       },
       {
         data: {
           hero: {
             heroFriends: [
-              { id: "1000", name: "Luke Skywalker" },
-              { id: "1003", name: "Leia Organa" },
+              { id: "1000", name: "Luke Skywalker", homeWorld: null },
+              { id: "1003", name: "Leia Organa", homeWorld: "Alderaan" },
             ],
             name: "R2-D2",
           },
         },
+        dataState: "complete",
         networkStatus: NetworkStatus.error,
-        error: new ApolloError({
-          graphQLErrors: [
-            new GraphQLError(
-              "homeWorld for character with ID 1000 could not be fetched.",
-              { path: ["hero", "heroFriends", 0, "homeWorld"] }
-            ),
+        error: new CombinedGraphQLErrors({
+          data: {
+            hero: {
+              heroFriends: [
+                { id: "1000", name: "Luke Skywalker", homeWorld: null },
+                { id: "1003", name: "Leia Organa", homeWorld: "Alderaan" },
+              ],
+              name: "R2-D2",
+            },
+          },
+          errors: [
+            {
+              message:
+                "homeWorld for character with ID 1000 could not be fetched.",
+              path: ["hero", "heroFriends", 0, "homeWorld"],
+            },
           ],
         }),
       },
       {
-        data: {
+        data: markAsStreaming({
           hero: {
             heroFriends: [
-              { id: "1000", name: "Luke Skywalker" },
-              { id: "1003", name: "Leia Organa" },
+              { id: "1000", name: "Luke Skywalker", homeWorld: null },
+              { id: "1003", name: "Leia Organa", homeWorld: "Alderaan" },
             ],
             name: "R2-D2",
           },
-        },
-        networkStatus: NetworkStatus.ready,
+        }),
+        dataState: "streaming",
+        networkStatus: NetworkStatus.streaming,
         error: undefined,
       },
       {
@@ -9539,6 +10003,7 @@ describe("useSuspenseQuery", () => {
             name: "R2-D2",
           },
         },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -9552,6 +10017,7 @@ describe("useSuspenseQuery", () => {
             name: "C3PO",
           },
         },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
         error: undefined,
       },
@@ -9568,7 +10034,7 @@ describe("useSuspenseQuery", () => {
     }
 
     type UpdateQueryFn = NonNullable<
-      SubscribeToMoreOptions<
+      ObservableQuery.SubscribeToMoreOptions<
         QueryData | undefined,
         OperationVariables,
         SubscriptionData
@@ -9580,7 +10046,7 @@ describe("useSuspenseQuery", () => {
     const wsLink = new MockSubscriptionLink();
     const mockLink = new MockLink(mocks);
 
-    const link = split(
+    const link = ApolloLink.split(
       ({ query }) => {
         const definition = getMainDefinition(query);
 
@@ -9646,11 +10112,18 @@ describe("useSuspenseQuery", () => {
     );
 
     expect(renders.count).toBe(3 + (IS_REACT_19 ? renders.suspenseCount : 0));
-    expect(renders.frames).toMatchObject([
-      { data: { greeting: "Hello" }, networkStatus: NetworkStatus.ready },
+    expect(renders.frames).toStrictEqualTyped([
+      {
+        data: { greeting: "Hello" },
+        dataState: "complete",
+        networkStatus: NetworkStatus.ready,
+        error: undefined,
+      },
       {
         data: { greeting: "Subscription hello" },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
+        error: undefined,
       },
     ]);
   });
@@ -9782,7 +10255,7 @@ describe("useSuspenseQuery", () => {
       }
     `;
 
-    const mocks: MockedResponse<Data, Variables>[] = [
+    const mocks: MockLink.MockedResponse<Data, Variables>[] = [
       {
         request: { query, variables: { id: "1" } },
         result: {
@@ -9925,7 +10398,7 @@ describe("useSuspenseQuery", () => {
       }
     `;
 
-    const mocks: MockedResponse<Data, Variables>[] = [
+    const mocks: MockLink.MockedResponse<Data, Variables>[] = [
       {
         request: { query, variables: { id: "1" } },
         result: {
@@ -10047,7 +10520,7 @@ describe("useSuspenseQuery", () => {
       }
     `;
 
-    const mocks: MockedResponse<Data, Variables>[] = [
+    const mocks: MockLink.MockedResponse<Data, Variables>[] = [
       {
         request: { query, variables: { offset: 0 } },
         result: {
@@ -10209,18 +10682,22 @@ describe("useSuspenseQuery", () => {
     await waitFor(() => {
       // We should see the cached greeting while the network request is in flight
       // and the network status should be set to `loading`.
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: { greeting: "Hello" },
+        dataState: "complete",
         networkStatus: NetworkStatus.loading,
+        error: undefined,
       });
     });
 
     await waitFor(() => {
       // We should see the updated greeting once the network request finishes
       // and the network status should be set to `ready`.
-      expect(result.current).toMatchObject({
+      expect(result.current).toStrictEqualTyped({
         data: { greeting: "Hello" },
+        dataState: "complete",
         networkStatus: NetworkStatus.ready,
+        error: undefined,
       });
     });
   });
@@ -10245,7 +10722,7 @@ describe("useSuspenseQuery", () => {
 
     const renderStream = createRenderStream({
       initialSnapshot: {
-        result: null as UseSuspenseQueryResult<
+        result: null as useSuspenseQuery.Result<
           PaginatedCaseData,
           PaginatedCaseVariables
         > | null,
@@ -10377,7 +10854,7 @@ describe("useSuspenseQuery", () => {
       }
     `;
 
-    const mocks: MockedResponse<Data, Variables>[] = [
+    const mocks: MockLink.MockedResponse<Data, Variables>[] = [
       {
         request: { query, variables: { offset: 0 } },
         result: {
@@ -10416,7 +10893,7 @@ describe("useSuspenseQuery", () => {
       initialSnapshot: {
         isPending: false,
         result: null as Pick<
-          UseSuspenseQueryResult<Data>,
+          useSuspenseQuery.Result<Data>,
           "data" | "error" | "networkStatus"
         > | null,
       },
@@ -10623,7 +11100,7 @@ describe("useSuspenseQuery", () => {
 
     const renderStream = createRenderStream({
       initialSnapshot: {
-        result: null as UseSuspenseQueryResult<
+        result: null as useSuspenseQuery.Result<
           PaginatedCaseData,
           PaginatedCaseVariables
         > | null,
@@ -10748,11 +11225,11 @@ describe("useSuspenseQuery", () => {
 
     const renderStream = createRenderStream({
       initialSnapshot: {
-        result: null as UseSuspenseQueryResult<
+        result: null as useSuspenseQuery.Result<
           PaginatedCaseData,
           PaginatedCaseVariables
         > | null,
-        error: null as ApolloError | null,
+        error: null as Error | null,
       },
     });
 
@@ -10813,6 +11290,7 @@ describe("useSuspenseQuery", () => {
     }
 
     const { snapshot } = renderStream.getCurrentRender();
+
     snapshot.result!.fetchMore({ variables: { offset: 2 } }).catch(() => {});
 
     {
@@ -10826,8 +11304,9 @@ describe("useSuspenseQuery", () => {
 
       expect(renderedComponents).toStrictEqual([ErrorFallback]);
       expect(snapshot.error).toEqual(
-        new ApolloError({
-          graphQLErrors: [{ message: "Could not fetch letters" }],
+        new CombinedGraphQLErrors({
+          data: null,
+          errors: [{ message: "Could not fetch letters" }],
         })
       );
     }
@@ -10848,7 +11327,7 @@ describe("useSuspenseQuery", () => {
       } & { " $fragmentRefs"?: { UserFieldsFragment: UserFieldsFragment } };
     }
 
-    const query: MaskedDocumentNode<Query, never> = gql`
+    const query: TypedDocumentNode<Query, Record<string, never>> = gql`
       query MaskedQuery {
         currentUser {
           id
@@ -10886,7 +11365,10 @@ describe("useSuspenseQuery", () => {
 
     const renderStream = createRenderStream({
       initialSnapshot: {
-        result: null as UseSuspenseQueryResult<Masked<Query>, never> | null,
+        result: null as useSuspenseQuery.Result<
+          Query,
+          Record<string, never>
+        > | null,
       },
     });
 
@@ -10940,7 +11422,7 @@ describe("useSuspenseQuery", () => {
       } & { " $fragmentRefs"?: { UserFieldsFragment: UserFieldsFragment } };
     }
 
-    const query: TypedDocumentNode<Query, never> = gql`
+    const query: TypedDocumentNode<Query, Record<string, never>> = gql`
       query MaskedQuery {
         currentUser {
           id
@@ -10978,7 +11460,10 @@ describe("useSuspenseQuery", () => {
 
     const renderStream = createRenderStream({
       initialSnapshot: {
-        result: null as UseSuspenseQueryResult<Query, never> | null,
+        result: null as useSuspenseQuery.Result<
+          Query,
+          Record<string, never>
+        > | null,
       },
     });
 
@@ -11030,7 +11515,7 @@ describe("useSuspenseQuery", () => {
       } & { " $fragmentRefs"?: { UserFieldsFragment: UserFieldsFragment } };
     }
 
-    const query: TypedDocumentNode<Query, never> = gql`
+    const query: TypedDocumentNode<Query, Record<string, never>> = gql`
       query MaskedQuery {
         currentUser {
           id
@@ -11067,7 +11552,10 @@ describe("useSuspenseQuery", () => {
 
     const renderStream = createRenderStream({
       initialSnapshot: {
-        result: null as UseSuspenseQueryResult<Query, never> | null,
+        result: null as useSuspenseQuery.Result<
+          Query,
+          Record<string, never>
+        > | null,
       },
     });
 
@@ -11119,7 +11607,7 @@ describe("useSuspenseQuery", () => {
       } & { " $fragmentRefs"?: { UserFieldsFragment: UserFieldsFragment } };
     }
 
-    const query: MaskedDocumentNode<Query, never> = gql`
+    const query: TypedDocumentNode<Query, Record<string, never>> = gql`
       query MaskedQuery {
         currentUser {
           id
@@ -11157,7 +11645,10 @@ describe("useSuspenseQuery", () => {
 
     const renderStream = createRenderStream({
       initialSnapshot: {
-        result: null as UseSuspenseQueryResult<Masked<Query>, never> | null,
+        result: null as useSuspenseQuery.Result<
+          Query,
+          Record<string, never>
+        > | null,
       },
     });
 
@@ -11238,7 +11729,7 @@ describe("useSuspenseQuery", () => {
       } & { " $fragmentRefs"?: { UserFieldsFragment: UserFieldsFragment } };
     }
 
-    const query: MaskedDocumentNode<Query, never> = gql`
+    const query: TypedDocumentNode<Query, Record<string, never>> = gql`
       query MaskedQuery {
         currentUser {
           id
@@ -11276,7 +11767,10 @@ describe("useSuspenseQuery", () => {
 
     const renderStream = createRenderStream({
       initialSnapshot: {
-        result: null as UseSuspenseQueryResult<Masked<Query>, never> | null,
+        result: null as useSuspenseQuery.Result<
+          Query,
+          Record<string, never>
+        > | null,
       },
     });
 
@@ -11354,7 +11848,7 @@ describe("useSuspenseQuery", () => {
       } & { " $fragmentRefs"?: { UserFieldsFragment: UserFieldsFragment } };
     }
 
-    const query: MaskedDocumentNode<Query, never> = gql`
+    const query: TypedDocumentNode<Query, Record<string, never>> = gql`
       query MaskedQuery {
         currentUser {
           id
@@ -11404,7 +11898,10 @@ describe("useSuspenseQuery", () => {
 
     const renderStream = createRenderStream({
       initialSnapshot: {
-        result: null as UseSuspenseQueryResult<Masked<Query>, never> | null,
+        result: null as useSuspenseQuery.Result<
+          Query,
+          Record<string, never>
+        > | null,
       },
     });
 
@@ -11452,7 +11949,7 @@ describe("useSuspenseQuery", () => {
       } & { " $fragmentRefs"?: { UserFieldsFragment: UserFieldsFragment } };
     }
 
-    const query: MaskedDocumentNode<Query, never> = gql`
+    const query: TypedDocumentNode<Query, Record<string, never>> = gql`
       query MaskedQuery {
         currentUser {
           id
@@ -11503,7 +12000,10 @@ describe("useSuspenseQuery", () => {
 
     const renderStream = createRenderStream({
       initialSnapshot: {
-        result: null as UseSuspenseQueryResult<Masked<Query>, never> | null,
+        result: null as useSuspenseQuery.Result<
+          Query,
+          Record<string, never>
+        > | null,
       },
     });
 
@@ -11568,7 +12068,7 @@ describe("useSuspenseQuery", () => {
       } & { " $fragmentRefs"?: { UserFieldsFragment: UserFieldsFragment } };
     }
 
-    const query: MaskedDocumentNode<Query, never> = gql`
+    const query: TypedDocumentNode<Query, Record<string, never>> = gql`
       query MaskedQuery {
         currentUser {
           id
@@ -11622,9 +12122,10 @@ describe("useSuspenseQuery", () => {
 
     const renderStream = createRenderStream({
       initialSnapshot: {
-        result: null as UseSuspenseQueryResult<
-          DeepPartial<Masked<Query>>,
-          never
+        result: null as useSuspenseQuery.Result<
+          Query,
+          Record<string, never>,
+          "complete" | "streaming" | "partial"
         > | null,
       },
     });
@@ -11686,7 +12187,7 @@ describe("useSuspenseQuery", () => {
       } & { " $fragmentRefs"?: { UserFieldsFragment: UserFieldsFragment } };
     }
 
-    const query: MaskedDocumentNode<Query, never> = gql`
+    const query: TypedDocumentNode<Query, Record<string, never>> = gql`
       query MaskedQuery {
         currentUser {
           id
@@ -11726,9 +12227,10 @@ describe("useSuspenseQuery", () => {
 
     const renderStream = createRenderStream({
       initialSnapshot: {
-        result: null as UseSuspenseQueryResult<
-          Masked<Query> | undefined,
-          never
+        result: null as useSuspenseQuery.Result<
+          Query,
+          Record<string, never>,
+          "complete" | "streaming" | "empty"
         > | null,
       },
     });
@@ -11769,8 +12271,16 @@ describe("useSuspenseQuery", () => {
       });
 
       expect(result?.error).toEqual(
-        new ApolloError({
-          graphQLErrors: [new GraphQLError("Couldn't get name")],
+        new CombinedGraphQLErrors({
+          data: {
+            currentUser: {
+              __typename: "User",
+              id: 1,
+              name: null,
+              age: 34,
+            },
+          },
+          errors: [{ message: "Couldn't get name" }],
         })
       );
     }
@@ -11784,375 +12294,754 @@ describe("useSuspenseQuery", () => {
         }
       `;
 
-      const { data } = useSuspenseQuery(query);
+      const { data, dataState } = useSuspenseQuery(query);
 
       expectTypeOf(data).toEqualTypeOf<unknown>();
+      expectTypeOf(dataState).toEqualTypeOf<"complete" | "streaming">();
     });
 
     it("disallows wider variables type than specified", () => {
       const { query } = useVariablesQueryCase();
 
-      // @ts-expect-error should not allow wider TVariables type
-      useSuspenseQuery(query, { variables: { id: "1", foo: "bar" } });
+      useSuspenseQuery(query, {
+        variables: {
+          id: "1",
+          // @ts-expect-error unknown variable
+          foo: "bar",
+        },
+      });
     });
 
     it("returns TData in default case", () => {
       const { query } = useVariablesQueryCase();
 
-      const { data: inferred } = useSuspenseQuery(query);
+      {
+        const { data, dataState } = useSuspenseQuery(query, {
+          variables: { id: "1" },
+        });
 
-      expectTypeOf(inferred).toEqualTypeOf<VariablesCaseData>();
-      expectTypeOf(inferred).not.toEqualTypeOf<VariablesCaseData | undefined>();
+        expectTypeOf(data).toEqualTypeOf<
+          VariablesCaseData | DataValue.Streaming<VariablesCaseData>
+        >();
+        expectTypeOf(dataState).toEqualTypeOf<"complete" | "streaming">();
 
-      const { data: explicit } = useSuspenseQuery<
-        VariablesCaseData,
-        VariablesCaseVariables
-      >(query);
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<VariablesCaseData>();
+        }
 
-      expectTypeOf(explicit).toEqualTypeOf<VariablesCaseData>();
-      expectTypeOf(explicit).not.toEqualTypeOf<VariablesCaseData | undefined>();
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<VariablesCaseData>
+          >();
+        }
+      }
+
+      {
+        const { data, dataState } = useSuspenseQuery<
+          VariablesCaseData,
+          VariablesCaseVariables
+        >(query, { variables: { id: "1" } });
+
+        expectTypeOf(data).toEqualTypeOf<
+          VariablesCaseData | DataValue.Streaming<VariablesCaseData>
+        >();
+        expectTypeOf(dataState).toEqualTypeOf<"complete" | "streaming">();
+
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<VariablesCaseData>();
+        }
+
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<VariablesCaseData>
+          >();
+        }
+      }
 
       const { query: maskedQuery } = useMaskedVariablesQueryCase();
 
       {
-        const { data } = useSuspenseQuery(maskedQuery);
+        const { data, dataState } = useSuspenseQuery(maskedQuery, {
+          variables: { id: "1" },
+        });
 
-        expectTypeOf(data).toEqualTypeOf<Masked<MaskedVariablesCaseData>>();
-        expectTypeOf(data).not.toEqualTypeOf<UnmaskedVariablesCaseData>();
+        expectTypeOf(data).toEqualTypeOf<
+          MaskedVariablesCaseData | DataValue.Streaming<MaskedVariablesCaseData>
+        >();
+        expectTypeOf(dataState).toEqualTypeOf<"complete" | "streaming">();
+
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData>();
+        }
+
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<MaskedVariablesCaseData>
+          >();
+        }
       }
 
       {
-        const { data } = useSuspenseQuery<
+        const { data, dataState } = useSuspenseQuery<
           MaskedVariablesCaseData,
           VariablesCaseVariables
-        >(maskedQuery);
+        >(maskedQuery, { variables: { id: "1" } });
 
-        expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData>();
-        expectTypeOf(data).not.toEqualTypeOf<UnmaskedVariablesCaseData>();
-      }
+        expectTypeOf(data).toEqualTypeOf<
+          MaskedVariablesCaseData | DataValue.Streaming<MaskedVariablesCaseData>
+        >();
+        expectTypeOf(dataState).toEqualTypeOf<"complete" | "streaming">();
 
-      {
-        const { data } = useSuspenseQuery<
-          Masked<MaskedVariablesCaseData>,
-          VariablesCaseVariables
-        >(maskedQuery);
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData>();
+        }
 
-        expectTypeOf(data).toEqualTypeOf<Masked<MaskedVariablesCaseData>>();
-        expectTypeOf(data).not.toEqualTypeOf<UnmaskedVariablesCaseData>();
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<MaskedVariablesCaseData>
+          >();
+        }
       }
     });
 
     it('returns TData | undefined with errorPolicy: "ignore"', () => {
       const { query } = useVariablesQueryCase();
 
-      const { data: inferred } = useSuspenseQuery(query, {
-        errorPolicy: "ignore",
-      });
+      {
+        const { data, dataState } = useSuspenseQuery(query, {
+          errorPolicy: "ignore",
+          variables: { id: "1" },
+        });
 
-      expectTypeOf(inferred).toEqualTypeOf<VariablesCaseData | undefined>();
-      expectTypeOf(inferred).not.toEqualTypeOf<VariablesCaseData>();
+        expectTypeOf(data).toEqualTypeOf<
+          VariablesCaseData | DataValue.Streaming<VariablesCaseData> | undefined
+        >();
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "empty"
+        >();
 
-      const { data: explicit } = useSuspenseQuery<
-        VariablesCaseData,
-        VariablesCaseVariables
-      >(query, {
-        errorPolicy: "ignore",
-      });
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<VariablesCaseData>();
+        }
 
-      expectTypeOf(explicit).toEqualTypeOf<VariablesCaseData | undefined>();
-      expectTypeOf(explicit).not.toEqualTypeOf<VariablesCaseData>();
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<VariablesCaseData>
+          >();
+        }
+
+        if (dataState === "empty") {
+          expectTypeOf(data).toEqualTypeOf<undefined>();
+        }
+      }
+
+      {
+        const { data, dataState } = useSuspenseQuery<
+          VariablesCaseData,
+          VariablesCaseVariables
+        >(query, {
+          errorPolicy: "ignore",
+          variables: { id: "1" },
+        });
+
+        expectTypeOf(data).toEqualTypeOf<
+          VariablesCaseData | DataValue.Streaming<VariablesCaseData> | undefined
+        >();
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "empty"
+        >();
+
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<VariablesCaseData>();
+        }
+
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<VariablesCaseData>
+          >();
+        }
+
+        if (dataState === "empty") {
+          expectTypeOf(data).toEqualTypeOf<undefined>();
+        }
+      }
 
       const { query: maskedQuery } = useMaskedVariablesQueryCase();
 
       {
-        const { data } = useSuspenseQuery(maskedQuery, {
+        const { data, dataState } = useSuspenseQuery(maskedQuery, {
           errorPolicy: "ignore",
+          variables: { id: "1" },
         });
 
         expectTypeOf(data).toEqualTypeOf<
-          Masked<MaskedVariablesCaseData> | undefined
+          | MaskedVariablesCaseData
+          | DataValue.Streaming<MaskedVariablesCaseData>
+          | undefined
         >();
-        expectTypeOf(data).not.toEqualTypeOf<
-          UnmaskedVariablesCaseData | undefined
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "empty"
         >();
+
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData>();
+        }
+
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<MaskedVariablesCaseData>
+          >();
+        }
+
+        if (dataState === "empty") {
+          expectTypeOf(data).toEqualTypeOf<undefined>();
+        }
       }
 
       {
-        const { data } = useSuspenseQuery<
+        const { data, dataState } = useSuspenseQuery<
           MaskedVariablesCaseData,
           VariablesCaseVariables
-        >(maskedQuery, { errorPolicy: "ignore" });
-
-        expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData | undefined>();
-        expectTypeOf(data).not.toEqualTypeOf<
-          UnmaskedVariablesCaseData | undefined
-        >();
-      }
-
-      {
-        const { data } = useSuspenseQuery<
-          Masked<MaskedVariablesCaseData>,
-          VariablesCaseVariables
-        >(maskedQuery, { errorPolicy: "ignore" });
+        >(maskedQuery, { errorPolicy: "ignore", variables: { id: "1" } });
 
         expectTypeOf(data).toEqualTypeOf<
-          Masked<MaskedVariablesCaseData> | undefined
+          | MaskedVariablesCaseData
+          | DataValue.Streaming<MaskedVariablesCaseData>
+          | undefined
         >();
-        expectTypeOf(data).not.toEqualTypeOf<
-          UnmaskedVariablesCaseData | undefined
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "empty"
         >();
+
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData>();
+        }
+
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<MaskedVariablesCaseData>
+          >();
+        }
+
+        if (dataState === "empty") {
+          expectTypeOf(data).toEqualTypeOf<undefined>();
+        }
       }
     });
 
     it('returns TData | undefined with errorPolicy: "all"', () => {
       const { query } = useVariablesQueryCase();
 
-      const { data: inferred } = useSuspenseQuery(query, {
-        errorPolicy: "all",
-      });
+      {
+        const { data, dataState } = useSuspenseQuery(query, {
+          errorPolicy: "all",
+          variables: { id: "1" },
+        });
 
-      expectTypeOf(inferred).toEqualTypeOf<VariablesCaseData | undefined>();
-      expectTypeOf(inferred).not.toEqualTypeOf<VariablesCaseData>();
+        expectTypeOf(data).toEqualTypeOf<
+          VariablesCaseData | DataValue.Streaming<VariablesCaseData> | undefined
+        >();
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "empty"
+        >();
 
-      const { data: explicit } = useSuspenseQuery<
-        VariablesCaseData,
-        VariablesCaseVariables
-      >(query, {
-        errorPolicy: "all",
-      });
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<VariablesCaseData>();
+        }
 
-      expectTypeOf(explicit).toEqualTypeOf<VariablesCaseData | undefined>();
-      expectTypeOf(explicit).not.toEqualTypeOf<VariablesCaseData>();
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<VariablesCaseData>
+          >();
+        }
+
+        if (dataState === "empty") {
+          expectTypeOf(data).toEqualTypeOf<undefined>();
+        }
+      }
+
+      {
+        const { data, dataState } = useSuspenseQuery<
+          VariablesCaseData,
+          VariablesCaseVariables
+        >(query, {
+          errorPolicy: "all",
+          variables: { id: "1" },
+        });
+
+        expectTypeOf(data).toEqualTypeOf<
+          VariablesCaseData | DataValue.Streaming<VariablesCaseData> | undefined
+        >();
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "empty"
+        >();
+
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<VariablesCaseData>();
+        }
+
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<VariablesCaseData>
+          >();
+        }
+
+        if (dataState === "empty") {
+          expectTypeOf(data).toEqualTypeOf<undefined>();
+        }
+      }
 
       const { query: maskedQuery } = useMaskedVariablesQueryCase();
 
       {
-        const { data } = useSuspenseQuery(maskedQuery, { errorPolicy: "all" });
+        const { data, dataState } = useSuspenseQuery(maskedQuery, {
+          errorPolicy: "all",
+          variables: { id: "1" },
+        });
 
         expectTypeOf(data).toEqualTypeOf<
-          Masked<MaskedVariablesCaseData> | undefined
+          | MaskedVariablesCaseData
+          | DataValue.Streaming<MaskedVariablesCaseData>
+          | undefined
         >();
-        expectTypeOf(data).not.toEqualTypeOf<
-          UnmaskedVariablesCaseData | undefined
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "empty"
         >();
+
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData>();
+        }
+
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<MaskedVariablesCaseData>
+          >();
+        }
+
+        if (dataState === "empty") {
+          expectTypeOf(data).toEqualTypeOf<undefined>();
+        }
       }
 
       {
-        const { data } = useSuspenseQuery<
+        const { data, dataState } = useSuspenseQuery<
           MaskedVariablesCaseData,
           VariablesCaseVariables
-        >(maskedQuery, { errorPolicy: "all" });
-
-        expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData | undefined>();
-        expectTypeOf(data).not.toEqualTypeOf<
-          UnmaskedVariablesCaseData | undefined
-        >();
-      }
-
-      {
-        const { data } = useSuspenseQuery<
-          Masked<MaskedVariablesCaseData>,
-          VariablesCaseVariables
-        >(maskedQuery, { errorPolicy: "all" });
+        >(maskedQuery, { errorPolicy: "all", variables: { id: "1" } });
 
         expectTypeOf(data).toEqualTypeOf<
-          Masked<MaskedVariablesCaseData> | undefined
+          | MaskedVariablesCaseData
+          | DataValue.Streaming<MaskedVariablesCaseData>
+          | undefined
         >();
-        expectTypeOf(data).not.toEqualTypeOf<
-          UnmaskedVariablesCaseData | undefined
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "empty"
         >();
+
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData>();
+        }
+
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<MaskedVariablesCaseData>
+          >();
+        }
+
+        if (dataState === "empty") {
+          expectTypeOf(data).toEqualTypeOf<undefined>();
+        }
       }
     });
 
     it('returns TData with errorPolicy: "none"', () => {
       const { query } = useVariablesQueryCase();
 
-      const { data: inferred } = useSuspenseQuery(query, {
-        errorPolicy: "none",
-      });
+      {
+        const { data, dataState } = useSuspenseQuery(query, {
+          errorPolicy: "none",
+          variables: { id: "1" },
+        });
 
-      expectTypeOf(inferred).toEqualTypeOf<VariablesCaseData>();
-      expectTypeOf(inferred).not.toEqualTypeOf<VariablesCaseData | undefined>();
+        expectTypeOf(data).toEqualTypeOf<
+          VariablesCaseData | DataValue.Streaming<VariablesCaseData>
+        >();
+        expectTypeOf(dataState).toEqualTypeOf<"complete" | "streaming">();
 
-      const { data: explicit } = useSuspenseQuery<
-        VariablesCaseData,
-        VariablesCaseVariables
-      >(query, {
-        errorPolicy: "none",
-      });
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<VariablesCaseData>();
+        }
 
-      expectTypeOf(explicit).toEqualTypeOf<VariablesCaseData>();
-      expectTypeOf(explicit).not.toEqualTypeOf<VariablesCaseData | undefined>();
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<VariablesCaseData>
+          >();
+        }
+      }
+
+      {
+        const { data, dataState } = useSuspenseQuery<
+          VariablesCaseData,
+          VariablesCaseVariables
+        >(query, {
+          errorPolicy: "none",
+          variables: { id: "1" },
+        });
+
+        expectTypeOf(data).toEqualTypeOf<
+          VariablesCaseData | DataValue.Streaming<VariablesCaseData>
+        >();
+        expectTypeOf(dataState).toEqualTypeOf<"complete" | "streaming">();
+
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<VariablesCaseData>();
+        }
+
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<VariablesCaseData>
+          >();
+        }
+      }
 
       const { query: maskedQuery } = useMaskedVariablesQueryCase();
 
       {
-        const { data } = useSuspenseQuery(maskedQuery, { errorPolicy: "none" });
+        const { data, dataState } = useSuspenseQuery(maskedQuery, {
+          errorPolicy: "none",
+          variables: { id: "1" },
+        });
 
-        expectTypeOf(data).toEqualTypeOf<Masked<MaskedVariablesCaseData>>();
-        expectTypeOf(data).not.toEqualTypeOf<UnmaskedVariablesCaseData>();
+        expectTypeOf(data).toEqualTypeOf<
+          MaskedVariablesCaseData | DataValue.Streaming<MaskedVariablesCaseData>
+        >();
+        expectTypeOf(dataState).toEqualTypeOf<"complete" | "streaming">();
+
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData>();
+        }
+
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<MaskedVariablesCaseData>
+          >();
+        }
       }
 
       {
-        const { data } = useSuspenseQuery<
+        const { data, dataState } = useSuspenseQuery<
           MaskedVariablesCaseData,
           VariablesCaseVariables
-        >(maskedQuery, { errorPolicy: "none" });
+        >(maskedQuery, { errorPolicy: "none", variables: { id: "1" } });
 
-        expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData>();
-        expectTypeOf(data).not.toEqualTypeOf<UnmaskedVariablesCaseData>();
-      }
+        expectTypeOf(data).toEqualTypeOf<
+          MaskedVariablesCaseData | DataValue.Streaming<MaskedVariablesCaseData>
+        >();
+        expectTypeOf(dataState).toEqualTypeOf<"complete" | "streaming">();
 
-      {
-        const { data } = useSuspenseQuery<
-          Masked<MaskedVariablesCaseData>,
-          VariablesCaseVariables
-        >(maskedQuery, { errorPolicy: "none" });
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData>();
+        }
 
-        expectTypeOf(data).toEqualTypeOf<Masked<MaskedVariablesCaseData>>();
-        expectTypeOf(data).not.toEqualTypeOf<UnmaskedVariablesCaseData>();
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<MaskedVariablesCaseData>
+          >();
+        }
       }
     });
 
     it("returns DeepPartial<TData> with returnPartialData: true", () => {
       const { query } = useVariablesQueryCase();
 
-      const { data: inferred } = useSuspenseQuery(query, {
-        returnPartialData: true,
-      });
+      {
+        const { data, dataState } = useSuspenseQuery(query, {
+          returnPartialData: true,
+          variables: { id: "1" },
+        });
 
-      expectTypeOf(inferred).toEqualTypeOf<DeepPartial<VariablesCaseData>>();
-      expectTypeOf(inferred).not.toEqualTypeOf<VariablesCaseData>();
+        expectTypeOf(data).toEqualTypeOf<
+          | VariablesCaseData
+          | DeepPartial<VariablesCaseData>
+          | DataValue.Streaming<VariablesCaseData>
+        >();
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "partial"
+        >();
 
-      const { data: explicit } = useSuspenseQuery<
-        VariablesCaseData,
-        VariablesCaseVariables
-      >(query, {
-        returnPartialData: true,
-      });
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<VariablesCaseData>();
+        }
 
-      expectTypeOf(explicit).toEqualTypeOf<DeepPartial<VariablesCaseData>>();
-      expectTypeOf(explicit).not.toEqualTypeOf<VariablesCaseData>();
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<VariablesCaseData>
+          >();
+        }
+
+        if (dataState === "partial") {
+          expectTypeOf(data).toEqualTypeOf<DeepPartial<VariablesCaseData>>();
+        }
+      }
+
+      {
+        const { data, dataState } = useSuspenseQuery<
+          VariablesCaseData,
+          VariablesCaseVariables
+        >(query, {
+          returnPartialData: true,
+          variables: { id: "1" },
+        });
+
+        expectTypeOf(data).toEqualTypeOf<
+          | VariablesCaseData
+          | DeepPartial<VariablesCaseData>
+          | DataValue.Streaming<VariablesCaseData>
+        >();
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "partial"
+        >();
+
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<VariablesCaseData>();
+        }
+
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<VariablesCaseData>
+          >();
+        }
+
+        if (dataState === "partial") {
+          expectTypeOf(data).toEqualTypeOf<DeepPartial<VariablesCaseData>>();
+        }
+      }
 
       const { query: maskedQuery } = useMaskedVariablesQueryCase();
 
       {
-        const { data } = useSuspenseQuery(maskedQuery, {
+        const { data, dataState } = useSuspenseQuery(maskedQuery, {
           returnPartialData: true,
+          variables: { id: "1" },
         });
 
         expectTypeOf(data).toEqualTypeOf<
-          DeepPartial<Masked<MaskedVariablesCaseData>>
+          | MaskedVariablesCaseData
+          | DataValue.Streaming<MaskedVariablesCaseData>
+          | DeepPartial<MaskedVariablesCaseData>
         >();
-        expectTypeOf(data).not.toEqualTypeOf<
-          DeepPartial<UnmaskedVariablesCaseData>
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "partial"
         >();
+
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData>();
+        }
+
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<MaskedVariablesCaseData>
+          >();
+        }
+
+        if (dataState === "partial") {
+          expectTypeOf(data).toEqualTypeOf<
+            DeepPartial<MaskedVariablesCaseData>
+          >();
+        }
       }
 
       {
-        const { data } = useSuspenseQuery<
+        const { data, dataState } = useSuspenseQuery<
           MaskedVariablesCaseData,
           VariablesCaseVariables
-        >(maskedQuery, { returnPartialData: true });
+        >(maskedQuery, { returnPartialData: true, variables: { id: "1" } });
 
         expectTypeOf(data).toEqualTypeOf<
-          DeepPartial<MaskedVariablesCaseData>
+          | MaskedVariablesCaseData
+          | DeepPartial<MaskedVariablesCaseData>
+          | DataValue.Streaming<MaskedVariablesCaseData>
         >();
-        expectTypeOf(data).not.toEqualTypeOf<
-          DeepPartial<UnmaskedVariablesCaseData>
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "partial"
         >();
-      }
 
-      {
-        const { data } = useSuspenseQuery<
-          Masked<MaskedVariablesCaseData>,
-          VariablesCaseVariables
-        >(maskedQuery, { returnPartialData: true });
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData>();
+        }
 
-        expectTypeOf(data).toEqualTypeOf<
-          DeepPartial<Masked<MaskedVariablesCaseData>>
-        >();
-        expectTypeOf(data).not.toEqualTypeOf<
-          DeepPartial<UnmaskedVariablesCaseData>
-        >();
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<MaskedVariablesCaseData>
+          >();
+        }
+
+        if (dataState === "partial") {
+          expectTypeOf(data).toEqualTypeOf<
+            DeepPartial<MaskedVariablesCaseData>
+          >();
+        }
       }
     });
 
     it("returns TData with returnPartialData: false", () => {
       const { query } = useVariablesQueryCase();
 
-      const { data: inferred } = useSuspenseQuery(query, {
-        returnPartialData: false,
-      });
+      {
+        const { data, dataState } = useSuspenseQuery(query, {
+          returnPartialData: false,
+          variables: { id: "1" },
+        });
 
-      expectTypeOf(inferred).toEqualTypeOf<VariablesCaseData>();
-      expectTypeOf(inferred).not.toEqualTypeOf<
-        DeepPartial<VariablesCaseData>
-      >();
+        expectTypeOf(data).toEqualTypeOf<
+          VariablesCaseData | DataValue.Streaming<VariablesCaseData>
+        >();
+        expectTypeOf(dataState).toEqualTypeOf<"complete" | "streaming">();
 
-      const { data: explicit } = useSuspenseQuery<
-        VariablesCaseData,
-        VariablesCaseVariables
-      >(query, {
-        returnPartialData: false,
-      });
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<VariablesCaseData>();
+        }
 
-      expectTypeOf(explicit).toEqualTypeOf<VariablesCaseData>();
-      expectTypeOf(explicit).not.toEqualTypeOf<
-        DeepPartial<VariablesCaseData>
-      >();
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<VariablesCaseData>
+          >();
+        }
+      }
+
+      {
+        const { data, dataState } = useSuspenseQuery<
+          VariablesCaseData,
+          VariablesCaseVariables
+        >(query, {
+          returnPartialData: false,
+          variables: { id: "1" },
+        });
+
+        expectTypeOf(data).toEqualTypeOf<
+          VariablesCaseData | DataValue.Streaming<VariablesCaseData>
+        >();
+        expectTypeOf(dataState).toEqualTypeOf<"complete" | "streaming">();
+
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<VariablesCaseData>();
+        }
+
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<VariablesCaseData>
+          >();
+        }
+      }
 
       const { query: maskedQuery } = useMaskedVariablesQueryCase();
 
       {
-        const { data } = useSuspenseQuery(maskedQuery, {
+        const { data, dataState } = useSuspenseQuery(maskedQuery, {
           returnPartialData: false,
+          variables: { id: "1" },
         });
 
-        expectTypeOf(data).toEqualTypeOf<Masked<MaskedVariablesCaseData>>();
-        expectTypeOf(data).not.toEqualTypeOf<UnmaskedVariablesCaseData>();
+        expectTypeOf(data).toEqualTypeOf<
+          MaskedVariablesCaseData | DataValue.Streaming<MaskedVariablesCaseData>
+        >();
+        expectTypeOf(dataState).toEqualTypeOf<"complete" | "streaming">();
+
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData>();
+        }
+
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<MaskedVariablesCaseData>
+          >();
+        }
       }
 
       {
-        const { data } = useSuspenseQuery<
+        const { data, dataState } = useSuspenseQuery<
           MaskedVariablesCaseData,
           VariablesCaseVariables
-        >(maskedQuery, { returnPartialData: false });
+        >(maskedQuery, { returnPartialData: false, variables: { id: "1" } });
 
-        expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData>();
-        expectTypeOf(data).not.toEqualTypeOf<UnmaskedVariablesCaseData>();
-      }
+        expectTypeOf(data).toEqualTypeOf<
+          MaskedVariablesCaseData | DataValue.Streaming<MaskedVariablesCaseData>
+        >();
+        expectTypeOf(dataState).toEqualTypeOf<"complete" | "streaming">();
 
-      {
-        const { data } = useSuspenseQuery<
-          Masked<MaskedVariablesCaseData>,
-          VariablesCaseVariables
-        >(maskedQuery, { returnPartialData: false });
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData>();
+        }
 
-        expectTypeOf(data).toEqualTypeOf<Masked<MaskedVariablesCaseData>>();
-        expectTypeOf(data).not.toEqualTypeOf<UnmaskedVariablesCaseData>();
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<MaskedVariablesCaseData>
+          >();
+        }
       }
     });
 
     it("returns TData | undefined when skip is present", () => {
       const { query } = useVariablesQueryCase();
 
-      const { data: inferred } = useSuspenseQuery(query, {
-        skip: true,
-      });
+      {
+        const { data, dataState } = useSuspenseQuery(query, {
+          skip: true,
+          variables: { id: "1" },
+        });
 
-      expectTypeOf(inferred).toEqualTypeOf<VariablesCaseData | undefined>();
-      expectTypeOf(inferred).not.toEqualTypeOf<VariablesCaseData>();
+        expectTypeOf(data).toEqualTypeOf<
+          VariablesCaseData | DataValue.Streaming<VariablesCaseData> | undefined
+        >();
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "empty"
+        >();
 
-      const { data: explicit } = useSuspenseQuery<
-        VariablesCaseData,
-        VariablesCaseVariables
-      >(query, {
-        skip: true,
-      });
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<VariablesCaseData>();
+        }
 
-      expectTypeOf(explicit).toEqualTypeOf<VariablesCaseData | undefined>();
-      expectTypeOf(explicit).not.toEqualTypeOf<VariablesCaseData>();
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<VariablesCaseData>
+          >();
+        }
+
+        if (dataState === "empty") {
+          expectTypeOf(data).toEqualTypeOf<undefined>();
+        }
+      }
+
+      {
+        const { data, dataState } = useSuspenseQuery<
+          VariablesCaseData,
+          VariablesCaseVariables
+        >(query, {
+          skip: true,
+          variables: { id: "1" },
+        });
+
+        expectTypeOf(data).toEqualTypeOf<
+          VariablesCaseData | DataValue.Streaming<VariablesCaseData> | undefined
+        >();
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "empty"
+        >();
+
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<VariablesCaseData>();
+        }
+
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<VariablesCaseData>
+          >();
+        }
+
+        if (dataState === "empty") {
+          expectTypeOf(data).toEqualTypeOf<undefined>();
+        }
+      }
 
       // TypeScript is too smart and using a `const` or `let` boolean variable
       // for the `skip` option results in a false positive. Using an options
@@ -12161,50 +13050,94 @@ describe("useSuspenseQuery", () => {
         skip: true,
       };
 
-      const { data: dynamic } = useSuspenseQuery(query, {
-        skip: options.skip,
-      });
+      {
+        const { data, dataState } = useSuspenseQuery(query, {
+          skip: options.skip,
+          variables: { id: "1" },
+        });
 
-      expectTypeOf(dynamic).toEqualTypeOf<VariablesCaseData | undefined>();
-      expectTypeOf(dynamic).not.toEqualTypeOf<VariablesCaseData>();
+        expectTypeOf(data).toEqualTypeOf<
+          VariablesCaseData | DataValue.Streaming<VariablesCaseData> | undefined
+        >();
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "empty"
+        >();
+
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<VariablesCaseData>();
+        }
+
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<VariablesCaseData>
+          >();
+        }
+
+        if (dataState === "empty") {
+          expectTypeOf(data).toEqualTypeOf<undefined>();
+        }
+      }
 
       const { query: maskedQuery } = useMaskedVariablesQueryCase();
 
       {
-        const { data } = useSuspenseQuery(maskedQuery, { skip: true });
+        const { data, dataState } = useSuspenseQuery(maskedQuery, {
+          skip: true,
+          variables: { id: "1" },
+        });
 
         expectTypeOf(data).toEqualTypeOf<
-          Masked<MaskedVariablesCaseData> | undefined
+          | MaskedVariablesCaseData
+          | DataValue.Streaming<MaskedVariablesCaseData>
+          | undefined
         >();
-        expectTypeOf(data).not.toEqualTypeOf<
-          UnmaskedVariablesCaseData | undefined
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "empty"
         >();
+
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData>();
+        }
+
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<MaskedVariablesCaseData>
+          >();
+        }
+
+        if (dataState === "empty") {
+          expectTypeOf(data).toEqualTypeOf<undefined>();
+        }
       }
 
       {
-        const { data } = useSuspenseQuery<
+        const { data, dataState } = useSuspenseQuery<
           MaskedVariablesCaseData,
           VariablesCaseVariables
-        >(maskedQuery, { skip: true });
-
-        expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData | undefined>();
-        expectTypeOf(data).not.toEqualTypeOf<
-          UnmaskedVariablesCaseData | undefined
-        >();
-      }
-
-      {
-        const { data } = useSuspenseQuery<
-          Masked<MaskedVariablesCaseData>,
-          VariablesCaseVariables
-        >(maskedQuery, { skip: true });
+        >(maskedQuery, { skip: true, variables: { id: "1" } });
 
         expectTypeOf(data).toEqualTypeOf<
-          Masked<MaskedVariablesCaseData> | undefined
+          | MaskedVariablesCaseData
+          | DataValue.Streaming<MaskedVariablesCaseData>
+          | undefined
         >();
-        expectTypeOf(data).not.toEqualTypeOf<
-          UnmaskedVariablesCaseData | undefined
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "empty"
         >();
+
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData>();
+        }
+
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<MaskedVariablesCaseData>
+          >();
+        }
+
+        if (dataState === "empty") {
+          expectTypeOf(data).toEqualTypeOf<undefined>();
+        }
       }
 
       {
@@ -12212,17 +13145,33 @@ describe("useSuspenseQuery", () => {
           skip: true,
         };
 
-        const { data } = useSuspenseQuery<
-          Masked<MaskedVariablesCaseData>,
+        const { data, dataState } = useSuspenseQuery<
+          MaskedVariablesCaseData,
           VariablesCaseVariables
-        >(maskedQuery, { skip: options.skip });
+        >(maskedQuery, { skip: options.skip, variables: { id: "1" } });
 
         expectTypeOf(data).toEqualTypeOf<
-          Masked<MaskedVariablesCaseData> | undefined
+          | MaskedVariablesCaseData
+          | DataValue.Streaming<MaskedVariablesCaseData>
+          | undefined
         >();
-        expectTypeOf(data).not.toEqualTypeOf<
-          UnmaskedVariablesCaseData | undefined
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "empty"
         >();
+
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData>();
+        }
+
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<MaskedVariablesCaseData>
+          >();
+        }
+
+        if (dataState === "empty") {
+          expectTypeOf(data).toEqualTypeOf<undefined>();
+        }
       }
     });
 
@@ -12232,62 +13181,122 @@ describe("useSuspenseQuery", () => {
         skip: true,
       };
 
-      const { data: inferred } = useSuspenseQuery(
-        query,
-        options.skip ? skipToken : { variables: { id: "1" } }
-      );
+      {
+        const { data, dataState } = useSuspenseQuery(
+          query,
+          options.skip ? skipToken : { variables: { id: "1" } }
+        );
 
-      expectTypeOf(inferred).toEqualTypeOf<VariablesCaseData | undefined>();
-      expectTypeOf(inferred).not.toEqualTypeOf<VariablesCaseData>();
+        expectTypeOf(data).toEqualTypeOf<
+          VariablesCaseData | DataValue.Streaming<VariablesCaseData> | undefined
+        >();
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "empty"
+        >();
 
-      const { data: explicit } = useSuspenseQuery<
-        VariablesCaseData,
-        VariablesCaseVariables
-      >(query, options.skip ? skipToken : { variables: { id: "1" } });
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<VariablesCaseData>();
+        }
 
-      expectTypeOf(explicit).toEqualTypeOf<VariablesCaseData | undefined>();
-      expectTypeOf(explicit).not.toEqualTypeOf<VariablesCaseData>();
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<VariablesCaseData>
+          >();
+        }
+
+        if (dataState === "empty") {
+          expectTypeOf(data).toEqualTypeOf<undefined>();
+        }
+      }
+
+      {
+        const { data, dataState } = useSuspenseQuery<
+          VariablesCaseData,
+          VariablesCaseVariables
+        >(query, options.skip ? skipToken : { variables: { id: "1" } });
+
+        expectTypeOf(data).toEqualTypeOf<
+          VariablesCaseData | DataValue.Streaming<VariablesCaseData> | undefined
+        >();
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "empty"
+        >();
+
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<VariablesCaseData>();
+        }
+
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<VariablesCaseData>
+          >();
+        }
+
+        if (dataState === "empty") {
+          expectTypeOf(data).toEqualTypeOf<undefined>();
+        }
+      }
 
       const { query: maskedQuery } = useMaskedVariablesQueryCase();
 
       {
-        const { data } = useSuspenseQuery(
+        const { data, dataState } = useSuspenseQuery(
           maskedQuery,
           options.skip ? skipToken : { variables: { id: "1" } }
         );
 
         expectTypeOf(data).toEqualTypeOf<
-          Masked<MaskedVariablesCaseData> | undefined
+          | MaskedVariablesCaseData
+          | DataValue.Streaming<MaskedVariablesCaseData>
+          | undefined
         >();
-        expectTypeOf(data).not.toEqualTypeOf<
-          UnmaskedVariablesCaseData | undefined
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "empty"
         >();
+
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData>();
+        }
+
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<MaskedVariablesCaseData>
+          >();
+        }
+
+        if (dataState === "empty") {
+          expectTypeOf(data).toEqualTypeOf<undefined>();
+        }
       }
 
       {
-        const { data } = useSuspenseQuery<
+        const { data, dataState } = useSuspenseQuery<
           MaskedVariablesCaseData,
           VariablesCaseVariables
         >(maskedQuery, options.skip ? skipToken : { variables: { id: "1" } });
 
-        expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData | undefined>();
-        expectTypeOf(data).not.toEqualTypeOf<
-          UnmaskedVariablesCaseData | undefined
-        >();
-      }
-
-      {
-        const { data } = useSuspenseQuery<
-          Masked<MaskedVariablesCaseData>,
-          VariablesCaseVariables
-        >(maskedQuery, options.skip ? skipToken : { variables: { id: "1" } });
-
         expectTypeOf(data).toEqualTypeOf<
-          Masked<MaskedVariablesCaseData> | undefined
+          | MaskedVariablesCaseData
+          | DataValue.Streaming<MaskedVariablesCaseData>
+          | undefined
         >();
-        expectTypeOf(data).not.toEqualTypeOf<
-          UnmaskedVariablesCaseData | undefined
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "empty"
         >();
+
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData>();
+        }
+
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<MaskedVariablesCaseData>
+          >();
+        }
+
+        if (dataState === "empty") {
+          expectTypeOf(data).toEqualTypeOf<undefined>();
+        }
       }
     });
 
@@ -12297,62 +13306,122 @@ describe("useSuspenseQuery", () => {
         skip: true,
       };
 
-      const { data: inferred } = useSuspenseQuery(
-        query,
-        options.skip ? skipToken : undefined
-      );
+      {
+        const { data, dataState } = useSuspenseQuery(
+          query,
+          options.skip ? skipToken : { variables: { id: "1" } }
+        );
 
-      expectTypeOf(inferred).toEqualTypeOf<VariablesCaseData | undefined>();
-      expectTypeOf(inferred).not.toEqualTypeOf<VariablesCaseData>();
+        expectTypeOf(data).toEqualTypeOf<
+          VariablesCaseData | DataValue.Streaming<VariablesCaseData> | undefined
+        >();
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "empty"
+        >();
 
-      const { data: explicit } = useSuspenseQuery<
-        VariablesCaseData,
-        VariablesCaseVariables
-      >(query, options.skip ? skipToken : undefined);
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<VariablesCaseData>();
+        }
 
-      expectTypeOf(explicit).toEqualTypeOf<VariablesCaseData | undefined>();
-      expectTypeOf(explicit).not.toEqualTypeOf<VariablesCaseData>();
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<VariablesCaseData>
+          >();
+        }
+
+        if (dataState === "empty") {
+          expectTypeOf(data).toEqualTypeOf<undefined>();
+        }
+      }
+
+      {
+        const { data, dataState } = useSuspenseQuery<
+          VariablesCaseData,
+          VariablesCaseVariables
+        >(query, options.skip ? skipToken : { variables: { id: "1" } });
+
+        expectTypeOf(data).toEqualTypeOf<
+          VariablesCaseData | DataValue.Streaming<VariablesCaseData> | undefined
+        >();
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "empty"
+        >();
+
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<VariablesCaseData>();
+        }
+
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<VariablesCaseData>
+          >();
+        }
+
+        if (dataState === "empty") {
+          expectTypeOf(data).toEqualTypeOf<undefined>();
+        }
+      }
 
       const { query: maskedQuery } = useMaskedVariablesQueryCase();
 
       {
-        const { data } = useSuspenseQuery(
+        const { data, dataState } = useSuspenseQuery(
           maskedQuery,
-          options.skip ? skipToken : undefined
+          options.skip ? skipToken : { variables: { id: "1" } }
         );
 
         expectTypeOf(data).toEqualTypeOf<
-          Masked<MaskedVariablesCaseData> | undefined
+          | MaskedVariablesCaseData
+          | DataValue.Streaming<MaskedVariablesCaseData>
+          | undefined
         >();
-        expectTypeOf(data).not.toEqualTypeOf<
-          UnmaskedVariablesCaseData | undefined
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "empty"
         >();
+
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData>();
+        }
+
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<MaskedVariablesCaseData>
+          >();
+        }
+
+        if (dataState === "empty") {
+          expectTypeOf(data).toEqualTypeOf<undefined>();
+        }
       }
 
       {
-        const { data } = useSuspenseQuery<
+        const { data, dataState } = useSuspenseQuery<
           MaskedVariablesCaseData,
           VariablesCaseVariables
-        >(maskedQuery, options.skip ? skipToken : undefined);
-
-        expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData | undefined>();
-        expectTypeOf(data).not.toEqualTypeOf<
-          UnmaskedVariablesCaseData | undefined
-        >();
-      }
-
-      {
-        const { data } = useSuspenseQuery<
-          Masked<MaskedVariablesCaseData>,
-          VariablesCaseVariables
-        >(maskedQuery, options.skip ? skipToken : undefined);
+        >(maskedQuery, options.skip ? skipToken : { variables: { id: "1" } });
 
         expectTypeOf(data).toEqualTypeOf<
-          Masked<MaskedVariablesCaseData> | undefined
+          | MaskedVariablesCaseData
+          | DataValue.Streaming<MaskedVariablesCaseData>
+          | undefined
         >();
-        expectTypeOf(data).not.toEqualTypeOf<
-          UnmaskedVariablesCaseData | undefined
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "empty"
         >();
+
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData>();
+        }
+
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<MaskedVariablesCaseData>
+          >();
+        }
+
+        if (dataState === "empty") {
+          expectTypeOf(data).toEqualTypeOf<undefined>();
+        }
       }
     });
 
@@ -12362,124 +13431,261 @@ describe("useSuspenseQuery", () => {
         skip: true,
       };
 
-      const { data: inferred } = useSuspenseQuery(
-        query,
-        options.skip ? skipToken : { returnPartialData: true }
-      );
+      {
+        const { data, dataState } = useSuspenseQuery(
+          query,
+          options.skip ? skipToken : (
+            { returnPartialData: true, variables: { id: "1" } }
+          )
+        );
 
-      expectTypeOf(inferred).toEqualTypeOf<
-        DeepPartial<VariablesCaseData> | undefined
-      >();
-      expectTypeOf(inferred).not.toEqualTypeOf<VariablesCaseData>();
+        expectTypeOf(data).toEqualTypeOf<
+          | VariablesCaseData
+          | DeepPartial<VariablesCaseData>
+          | DataValue.Streaming<VariablesCaseData>
+          | undefined
+        >();
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "partial" | "empty"
+        >();
 
-      const { data: explicit } = useSuspenseQuery<
-        VariablesCaseData,
-        VariablesCaseVariables
-      >(query, options.skip ? skipToken : { returnPartialData: true });
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<VariablesCaseData>();
+        }
 
-      expectTypeOf(explicit).toEqualTypeOf<
-        DeepPartial<VariablesCaseData> | undefined
-      >();
-      expectTypeOf(explicit).not.toEqualTypeOf<VariablesCaseData>();
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<VariablesCaseData>
+          >();
+        }
+
+        if (dataState === "partial") {
+          expectTypeOf(data).toEqualTypeOf<DeepPartial<VariablesCaseData>>();
+        }
+
+        if (dataState === "empty") {
+          expectTypeOf(data).toEqualTypeOf<undefined>();
+        }
+      }
+
+      {
+        const { data, dataState } = useSuspenseQuery<
+          VariablesCaseData,
+          VariablesCaseVariables
+        >(
+          query,
+          options.skip ? skipToken : (
+            { returnPartialData: true, variables: { id: "id" } }
+          )
+        );
+
+        expectTypeOf(data).toEqualTypeOf<
+          | VariablesCaseData
+          | DeepPartial<VariablesCaseData>
+          | DataValue.Streaming<VariablesCaseData>
+          | undefined
+        >();
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "partial" | "empty"
+        >();
+
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<VariablesCaseData>();
+        }
+
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<VariablesCaseData>
+          >();
+        }
+
+        if (dataState === "partial") {
+          expectTypeOf(data).toEqualTypeOf<DeepPartial<VariablesCaseData>>();
+        }
+
+        if (dataState === "empty") {
+          expectTypeOf(data).toEqualTypeOf<undefined>();
+        }
+      }
 
       const { query: maskedQuery } = useMaskedVariablesQueryCase();
 
       {
-        const { data } = useSuspenseQuery(
+        const { data, dataState } = useSuspenseQuery(
           maskedQuery,
-          options.skip ? skipToken : { returnPartialData: true }
+          options.skip ? skipToken : (
+            { returnPartialData: true, variables: { id: "1" } }
+          )
         );
 
         expectTypeOf(data).toEqualTypeOf<
-          DeepPartial<Masked<MaskedVariablesCaseData>> | undefined
+          | MaskedVariablesCaseData
+          | DeepPartial<MaskedVariablesCaseData>
+          | DataValue.Streaming<MaskedVariablesCaseData>
+          | undefined
         >();
-        expectTypeOf(data).not.toEqualTypeOf<
-          DeepPartial<UnmaskedVariablesCaseData> | undefined
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "partial" | "empty"
         >();
+
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData>();
+        }
+
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<MaskedVariablesCaseData>
+          >();
+        }
+
+        if (dataState === "partial") {
+          expectTypeOf(data).toEqualTypeOf<
+            DeepPartial<MaskedVariablesCaseData>
+          >();
+        }
+
+        if (dataState === "empty") {
+          expectTypeOf(data).toEqualTypeOf<undefined>();
+        }
       }
 
       {
-        const { data } = useSuspenseQuery<
+        const { data, dataState } = useSuspenseQuery<
           MaskedVariablesCaseData,
           VariablesCaseVariables
-        >(maskedQuery, options.skip ? skipToken : { returnPartialData: true });
+        >(
+          maskedQuery,
+          options.skip ? skipToken : (
+            { returnPartialData: true, variables: { id: "1" } }
+          )
+        );
 
         expectTypeOf(data).toEqualTypeOf<
-          DeepPartial<MaskedVariablesCaseData> | undefined
+          | MaskedVariablesCaseData
+          | DeepPartial<MaskedVariablesCaseData>
+          | DataValue.Streaming<MaskedVariablesCaseData>
+          | undefined
         >();
-        expectTypeOf(data).not.toEqualTypeOf<
-          DeepPartial<UnmaskedVariablesCaseData> | undefined
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "partial" | "empty"
         >();
-      }
 
-      {
-        const { data } = useSuspenseQuery<
-          Masked<MaskedVariablesCaseData>,
-          VariablesCaseVariables
-        >(maskedQuery, options.skip ? skipToken : { returnPartialData: true });
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData>();
+        }
 
-        expectTypeOf(data).toEqualTypeOf<
-          DeepPartial<Masked<MaskedVariablesCaseData>> | undefined
-        >();
-        expectTypeOf(data).not.toEqualTypeOf<
-          DeepPartial<UnmaskedVariablesCaseData> | undefined
-        >();
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<MaskedVariablesCaseData>
+          >();
+        }
+
+        if (dataState === "partial") {
+          expectTypeOf(data).toEqualTypeOf<
+            DeepPartial<MaskedVariablesCaseData>
+          >();
+        }
+
+        if (dataState === "empty") {
+          expectTypeOf(data).toEqualTypeOf<undefined>();
+        }
       }
     });
 
     it("returns TData when passing an option that does not affect TData", () => {
       const { query } = useVariablesQueryCase();
 
-      const { data: inferred } = useSuspenseQuery(query, {
-        fetchPolicy: "no-cache",
-      });
+      {
+        const { data, dataState } = useSuspenseQuery(query, {
+          fetchPolicy: "no-cache",
+          variables: { id: "1" },
+        });
 
-      expectTypeOf(inferred).toEqualTypeOf<VariablesCaseData>();
-      expectTypeOf(inferred).not.toEqualTypeOf<
-        DeepPartial<VariablesCaseData>
-      >();
+        expectTypeOf(data).toEqualTypeOf<
+          VariablesCaseData | DataValue.Streaming<VariablesCaseData>
+        >();
+        expectTypeOf(dataState).toEqualTypeOf<"complete" | "streaming">();
 
-      const { data: explicit } = useSuspenseQuery<
-        VariablesCaseData,
-        VariablesCaseVariables
-      >(query, {
-        fetchPolicy: "no-cache",
-      });
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<VariablesCaseData>();
+        }
 
-      expectTypeOf(explicit).toEqualTypeOf<VariablesCaseData>();
-      expectTypeOf(explicit).not.toEqualTypeOf<
-        DeepPartial<VariablesCaseData>
-      >();
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<VariablesCaseData>
+          >();
+        }
+      }
+
+      {
+        const { data, dataState } = useSuspenseQuery<
+          VariablesCaseData,
+          VariablesCaseVariables
+        >(query, {
+          fetchPolicy: "no-cache",
+          variables: { id: "1" },
+        });
+
+        expectTypeOf(data).toEqualTypeOf<
+          VariablesCaseData | DataValue.Streaming<VariablesCaseData>
+        >();
+        expectTypeOf(dataState).toEqualTypeOf<"complete" | "streaming">();
+
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<VariablesCaseData>();
+        }
+
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<VariablesCaseData>
+          >();
+        }
+      }
 
       const { query: maskedQuery } = useMaskedVariablesQueryCase();
 
       {
-        const { data } = useSuspenseQuery(maskedQuery, {
+        const { data, dataState } = useSuspenseQuery(maskedQuery, {
           fetchPolicy: "no-cache",
+          variables: { id: "1" },
         });
 
-        expectTypeOf(data).toEqualTypeOf<Masked<MaskedVariablesCaseData>>();
-        expectTypeOf(data).not.toEqualTypeOf<UnmaskedVariablesCaseData>();
+        expectTypeOf(data).toEqualTypeOf<
+          MaskedVariablesCaseData | DataValue.Streaming<MaskedVariablesCaseData>
+        >();
+        expectTypeOf(dataState).toEqualTypeOf<"complete" | "streaming">();
+
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData>();
+        }
+
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<MaskedVariablesCaseData>
+          >();
+        }
       }
 
       {
-        const { data } = useSuspenseQuery<
+        const { data, dataState } = useSuspenseQuery<
           MaskedVariablesCaseData,
           VariablesCaseVariables
-        >(maskedQuery, { fetchPolicy: "no-cache" });
+        >(maskedQuery, { fetchPolicy: "no-cache", variables: { id: "1" } });
 
-        expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData>();
-        expectTypeOf(data).not.toEqualTypeOf<UnmaskedVariablesCaseData>();
-      }
+        expectTypeOf(data).toEqualTypeOf<
+          MaskedVariablesCaseData | DataValue.Streaming<MaskedVariablesCaseData>
+        >();
+        expectTypeOf(dataState).toEqualTypeOf<"complete" | "streaming">();
 
-      {
-        const { data } = useSuspenseQuery<
-          Masked<MaskedVariablesCaseData>,
-          VariablesCaseVariables
-        >(maskedQuery, { fetchPolicy: "no-cache" });
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData>();
+        }
 
-        expectTypeOf(data).toEqualTypeOf<Masked<MaskedVariablesCaseData>>();
-        expectTypeOf(data).not.toEqualTypeOf<UnmaskedVariablesCaseData>();
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<MaskedVariablesCaseData>
+          >();
+        }
       }
     });
 
@@ -12495,284 +13701,664 @@ describe("useSuspenseQuery", () => {
       const { query } = useVariablesQueryCase();
       const { query: maskedQuery } = useMaskedVariablesQueryCase();
 
-      const { data: inferredPartialDataIgnore } = useSuspenseQuery(query, {
-        returnPartialData: true,
-        errorPolicy: "ignore",
-      });
-
-      expectTypeOf(inferredPartialDataIgnore).toEqualTypeOf<
-        DeepPartial<VariablesCaseData> | undefined
-      >();
-      expectTypeOf(
-        inferredPartialDataIgnore
-      ).not.toEqualTypeOf<VariablesCaseData>();
-
-      const { data: explicitPartialDataIgnore } = useSuspenseQuery<
-        VariablesCaseData,
-        VariablesCaseVariables
-      >(query, {
-        returnPartialData: true,
-        errorPolicy: "ignore",
-      });
-
-      expectTypeOf(explicitPartialDataIgnore).toEqualTypeOf<
-        DeepPartial<VariablesCaseData> | undefined
-      >();
-      expectTypeOf(
-        explicitPartialDataIgnore
-      ).not.toEqualTypeOf<VariablesCaseData>();
-
       {
-        const { data } = useSuspenseQuery(maskedQuery, {
+        const { data, dataState } = useSuspenseQuery(query, {
           returnPartialData: true,
           errorPolicy: "ignore",
+          variables: { id: "1" },
         });
 
         expectTypeOf(data).toEqualTypeOf<
-          DeepPartial<Masked<MaskedVariablesCaseData>> | undefined
+          | VariablesCaseData
+          | DeepPartial<VariablesCaseData>
+          | DataValue.Streaming<VariablesCaseData>
+          | undefined
         >();
-        expectTypeOf(data).not.toEqualTypeOf<
-          DeepPartial<UnmaskedVariablesCaseData> | undefined
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "partial" | "empty"
         >();
+
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<VariablesCaseData>();
+        }
+
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<VariablesCaseData>
+          >();
+        }
+
+        if (dataState === "partial") {
+          expectTypeOf(data).toEqualTypeOf<DeepPartial<VariablesCaseData>>();
+        }
+
+        if (dataState === "empty") {
+          expectTypeOf(data).toEqualTypeOf<undefined>();
+        }
       }
 
-      const { data: inferredPartialDataNone } = useSuspenseQuery(query, {
-        returnPartialData: true,
-        errorPolicy: "none",
-      });
-
-      expectTypeOf(inferredPartialDataNone).toEqualTypeOf<
-        DeepPartial<VariablesCaseData>
-      >();
-      expectTypeOf(
-        inferredPartialDataNone
-      ).not.toEqualTypeOf<VariablesCaseData>();
-
-      const { data: explicitPartialDataNone } = useSuspenseQuery<
-        VariablesCaseData,
-        VariablesCaseVariables
-      >(query, {
-        returnPartialData: true,
-        errorPolicy: "none",
-      });
-
-      expectTypeOf(explicitPartialDataNone).toEqualTypeOf<
-        DeepPartial<VariablesCaseData>
-      >();
-      expectTypeOf(
-        explicitPartialDataNone
-      ).not.toEqualTypeOf<VariablesCaseData>();
-
       {
-        const { data } = useSuspenseQuery(maskedQuery, {
+        const { data, dataState } = useSuspenseQuery<
+          VariablesCaseData,
+          VariablesCaseVariables
+        >(query, {
           returnPartialData: true,
           errorPolicy: "ignore",
+          variables: { id: "1" },
         });
 
         expectTypeOf(data).toEqualTypeOf<
-          DeepPartial<Masked<MaskedVariablesCaseData>> | undefined
+          | VariablesCaseData
+          | DeepPartial<VariablesCaseData>
+          | DataValue.Streaming<VariablesCaseData>
+          | undefined
         >();
-        expectTypeOf(data).not.toEqualTypeOf<
-          DeepPartial<UnmaskedVariablesCaseData> | undefined
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "partial" | "empty"
         >();
+
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<VariablesCaseData>();
+        }
+
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<VariablesCaseData>
+          >();
+        }
+
+        if (dataState === "partial") {
+          expectTypeOf(data).toEqualTypeOf<DeepPartial<VariablesCaseData>>();
+        }
+
+        if (dataState === "empty") {
+          expectTypeOf(data).toEqualTypeOf<undefined>();
+        }
       }
 
-      const { data: inferredSkipIgnore } = useSuspenseQuery(query, {
-        skip: options.skip,
-        errorPolicy: "ignore",
-      });
-
-      expectTypeOf(inferredSkipIgnore).toEqualTypeOf<
-        VariablesCaseData | undefined
-      >();
-      expectTypeOf(
-        inferredPartialDataIgnore
-      ).not.toEqualTypeOf<VariablesCaseData>();
-
-      const { data: explicitSkipIgnore } = useSuspenseQuery<
-        VariablesCaseData,
-        VariablesCaseVariables
-      >(query, {
-        skip: options.skip,
-        errorPolicy: "ignore",
-      });
-
-      expectTypeOf(explicitSkipIgnore).toEqualTypeOf<
-        VariablesCaseData | undefined
-      >();
-      expectTypeOf(explicitSkipIgnore).not.toEqualTypeOf<VariablesCaseData>();
-
       {
-        const { data } = useSuspenseQuery(maskedQuery, {
-          skip: options.skip,
+        const { data, dataState } = useSuspenseQuery(maskedQuery, {
+          returnPartialData: true,
           errorPolicy: "ignore",
+          variables: { id: "1" },
         });
 
         expectTypeOf(data).toEqualTypeOf<
-          Masked<MaskedVariablesCaseData> | undefined
+          | MaskedVariablesCaseData
+          | DeepPartial<MaskedVariablesCaseData>
+          | DataValue.Streaming<MaskedVariablesCaseData>
+          | undefined
         >();
-        expectTypeOf(data).not.toEqualTypeOf<
-          UnmaskedVariablesCaseData | undefined
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "partial" | "empty"
         >();
+
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData>();
+        }
+
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<MaskedVariablesCaseData>
+          >();
+        }
+
+        if (dataState === "partial") {
+          expectTypeOf(data).toEqualTypeOf<
+            DeepPartial<MaskedVariablesCaseData>
+          >();
+        }
+
+        if (dataState === "empty") {
+          expectTypeOf(data).toEqualTypeOf<undefined>();
+        }
       }
 
-      const { data: inferredSkipNone } = useSuspenseQuery(query, {
-        skip: options.skip,
-        errorPolicy: "none",
-      });
-
-      expectTypeOf(inferredSkipNone).toEqualTypeOf<
-        VariablesCaseData | undefined
-      >();
-      expectTypeOf(inferredSkipNone).not.toEqualTypeOf<VariablesCaseData>();
-
-      const { data: explicitSkipNone } = useSuspenseQuery<
-        VariablesCaseData,
-        VariablesCaseVariables
-      >(query, {
-        skip: options.skip,
-        errorPolicy: "none",
-      });
-
-      expectTypeOf(explicitSkipNone).toEqualTypeOf<
-        VariablesCaseData | undefined
-      >();
-      expectTypeOf(explicitSkipNone).not.toEqualTypeOf<VariablesCaseData>();
-
       {
-        const { data } = useSuspenseQuery(maskedQuery, {
-          skip: options.skip,
-          errorPolicy: "none",
-        });
-
-        expectTypeOf(data).toEqualTypeOf<
-          Masked<MaskedVariablesCaseData> | undefined
-        >();
-        expectTypeOf(data).not.toEqualTypeOf<
-          UnmaskedVariablesCaseData | undefined
-        >();
-      }
-
-      const { data: inferredPartialDataNoneSkip } = useSuspenseQuery(query, {
-        skip: options.skip,
-        returnPartialData: true,
-        errorPolicy: "none",
-      });
-
-      expectTypeOf(inferredPartialDataNoneSkip).toEqualTypeOf<
-        DeepPartial<VariablesCaseData> | undefined
-      >();
-      expectTypeOf(
-        inferredPartialDataNoneSkip
-      ).not.toEqualTypeOf<VariablesCaseData>();
-
-      const { data: explicitPartialDataNoneSkip } = useSuspenseQuery<
-        VariablesCaseData,
-        VariablesCaseVariables
-      >(query, {
-        skip: options.skip,
-        returnPartialData: true,
-        errorPolicy: "none",
-      });
-
-      expectTypeOf(explicitPartialDataNoneSkip).toEqualTypeOf<
-        DeepPartial<VariablesCaseData> | undefined
-      >();
-      expectTypeOf(
-        explicitPartialDataNoneSkip
-      ).not.toEqualTypeOf<VariablesCaseData>();
-
-      {
-        const { data } = useSuspenseQuery(maskedQuery, {
-          skip: options.skip,
+        const { data, dataState } = useSuspenseQuery(query, {
           returnPartialData: true,
           errorPolicy: "none",
+          variables: { id: "1" },
         });
 
         expectTypeOf(data).toEqualTypeOf<
-          DeepPartial<Masked<MaskedVariablesCaseData>> | undefined
+          | VariablesCaseData
+          | DeepPartial<VariablesCaseData>
+          | DataValue.Streaming<VariablesCaseData>
         >();
-        expectTypeOf(data).not.toEqualTypeOf<
-          DeepPartial<UnmaskedVariablesCaseData> | undefined
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "partial"
         >();
+
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<VariablesCaseData>();
+        }
+
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<VariablesCaseData>
+          >();
+        }
+
+        if (dataState === "partial") {
+          expectTypeOf(data).toEqualTypeOf<DeepPartial<VariablesCaseData>>();
+        }
+      }
+
+      {
+        const { data, dataState } = useSuspenseQuery<
+          VariablesCaseData,
+          VariablesCaseVariables
+        >(query, {
+          returnPartialData: true,
+          errorPolicy: "none",
+          variables: { id: "1" },
+        });
+
+        expectTypeOf(data).toEqualTypeOf<
+          | VariablesCaseData
+          | DeepPartial<VariablesCaseData>
+          | DataValue.Streaming<VariablesCaseData>
+        >();
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "partial"
+        >();
+
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<VariablesCaseData>();
+        }
+
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<VariablesCaseData>
+          >();
+        }
+
+        if (dataState === "partial") {
+          expectTypeOf(data).toEqualTypeOf<DeepPartial<VariablesCaseData>>();
+        }
+      }
+
+      {
+        const { data, dataState } = useSuspenseQuery(maskedQuery, {
+          returnPartialData: true,
+          errorPolicy: "ignore",
+          variables: { id: "1" },
+        });
+
+        expectTypeOf(data).toEqualTypeOf<
+          | MaskedVariablesCaseData
+          | DeepPartial<MaskedVariablesCaseData>
+          | DataValue.Streaming<MaskedVariablesCaseData>
+          | undefined
+        >();
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "partial" | "empty"
+        >();
+
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData>();
+        }
+
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<MaskedVariablesCaseData>
+          >();
+        }
+
+        if (dataState === "partial") {
+          expectTypeOf(data).toEqualTypeOf<
+            DeepPartial<MaskedVariablesCaseData>
+          >();
+        }
+
+        if (dataState === "empty") {
+          expectTypeOf(data).toEqualTypeOf<undefined>();
+        }
+      }
+
+      {
+        const { data, dataState } = useSuspenseQuery(query, {
+          skip: options.skip,
+          errorPolicy: "ignore",
+          variables: { id: "1" },
+        });
+
+        expectTypeOf(data).toEqualTypeOf<
+          VariablesCaseData | DataValue.Streaming<VariablesCaseData> | undefined
+        >();
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "empty"
+        >();
+
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<VariablesCaseData>();
+        }
+
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<VariablesCaseData>
+          >();
+        }
+
+        if (dataState === "empty") {
+          expectTypeOf(data).toEqualTypeOf<undefined>();
+        }
+      }
+
+      {
+        const { data, dataState } = useSuspenseQuery<
+          VariablesCaseData,
+          VariablesCaseVariables
+        >(query, {
+          skip: options.skip,
+          errorPolicy: "ignore",
+          variables: { id: "1" },
+        });
+
+        expectTypeOf(data).toEqualTypeOf<
+          VariablesCaseData | DataValue.Streaming<VariablesCaseData> | undefined
+        >();
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "empty"
+        >();
+
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<VariablesCaseData>();
+        }
+
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<VariablesCaseData>
+          >();
+        }
+
+        if (dataState === "empty") {
+          expectTypeOf(data).toEqualTypeOf<undefined>();
+        }
+      }
+
+      {
+        const { data, dataState } = useSuspenseQuery(maskedQuery, {
+          skip: options.skip,
+          errorPolicy: "ignore",
+          variables: { id: "1" },
+        });
+
+        expectTypeOf(data).toEqualTypeOf<
+          | MaskedVariablesCaseData
+          | DataValue.Streaming<MaskedVariablesCaseData>
+          | undefined
+        >();
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "empty"
+        >();
+
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData>();
+        }
+
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<MaskedVariablesCaseData>
+          >();
+        }
+
+        if (dataState === "empty") {
+          expectTypeOf(data).toEqualTypeOf<undefined>();
+        }
+      }
+
+      {
+        const { data, dataState } = useSuspenseQuery(query, {
+          skip: options.skip,
+          errorPolicy: "none",
+          variables: { id: "1" },
+        });
+
+        expectTypeOf(data).toEqualTypeOf<
+          VariablesCaseData | DataValue.Streaming<VariablesCaseData> | undefined
+        >();
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "empty"
+        >();
+
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<VariablesCaseData>();
+        }
+
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<VariablesCaseData>
+          >();
+        }
+
+        if (dataState === "empty") {
+          expectTypeOf(data).toEqualTypeOf<undefined>();
+        }
+      }
+
+      {
+        const { data, dataState } = useSuspenseQuery<
+          VariablesCaseData,
+          VariablesCaseVariables
+        >(query, {
+          skip: options.skip,
+          errorPolicy: "none",
+          variables: { id: "1" },
+        });
+
+        expectTypeOf(data).toEqualTypeOf<
+          VariablesCaseData | DataValue.Streaming<VariablesCaseData> | undefined
+        >();
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "empty"
+        >();
+
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<VariablesCaseData>();
+        }
+
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<VariablesCaseData>
+          >();
+        }
+
+        if (dataState === "empty") {
+          expectTypeOf(data).toEqualTypeOf<undefined>();
+        }
+      }
+
+      {
+        const { data, dataState } = useSuspenseQuery(maskedQuery, {
+          skip: options.skip,
+          errorPolicy: "none",
+          variables: { id: "1" },
+        });
+
+        expectTypeOf(data).toEqualTypeOf<
+          | MaskedVariablesCaseData
+          | DataValue.Streaming<MaskedVariablesCaseData>
+          | undefined
+        >();
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "empty"
+        >();
+
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData>();
+        }
+
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<MaskedVariablesCaseData>
+          >();
+        }
+
+        if (dataState === "empty") {
+          expectTypeOf(data).toEqualTypeOf<undefined>();
+        }
+      }
+
+      {
+        const { data, dataState } = useSuspenseQuery(query, {
+          skip: options.skip,
+          returnPartialData: true,
+          errorPolicy: "none",
+          variables: { id: "1" },
+        });
+
+        expectTypeOf(data).toEqualTypeOf<
+          | VariablesCaseData
+          | DeepPartial<VariablesCaseData>
+          | DataValue.Streaming<VariablesCaseData>
+          | undefined
+        >();
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "partial" | "empty"
+        >();
+
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<VariablesCaseData>();
+        }
+
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<VariablesCaseData>
+          >();
+        }
+
+        if (dataState === "partial") {
+          expectTypeOf(data).toEqualTypeOf<DeepPartial<VariablesCaseData>>();
+        }
+
+        if (dataState === "empty") {
+          expectTypeOf(data).toEqualTypeOf<undefined>();
+        }
+      }
+
+      {
+        const { data, dataState } = useSuspenseQuery<
+          VariablesCaseData,
+          VariablesCaseVariables
+        >(query, {
+          skip: options.skip,
+          returnPartialData: true,
+          errorPolicy: "none",
+          variables: { id: "1" },
+        });
+
+        expectTypeOf(data).toEqualTypeOf<
+          | VariablesCaseData
+          | DeepPartial<VariablesCaseData>
+          | DataValue.Streaming<VariablesCaseData>
+          | undefined
+        >();
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "partial" | "empty"
+        >();
+
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<VariablesCaseData>();
+        }
+
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<VariablesCaseData>
+          >();
+        }
+
+        if (dataState === "partial") {
+          expectTypeOf(data).toEqualTypeOf<DeepPartial<VariablesCaseData>>();
+        }
+
+        if (dataState === "empty") {
+          expectTypeOf(data).toEqualTypeOf<undefined>();
+        }
+      }
+
+      {
+        const { data, dataState } = useSuspenseQuery(maskedQuery, {
+          skip: options.skip,
+          returnPartialData: true,
+          errorPolicy: "none",
+          variables: { id: "1" },
+        });
+
+        expectTypeOf(data).toEqualTypeOf<
+          | MaskedVariablesCaseData
+          | DeepPartial<MaskedVariablesCaseData>
+          | DataValue.Streaming<MaskedVariablesCaseData>
+          | undefined
+        >();
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "partial" | "empty"
+        >();
+
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData>();
+        }
+
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<MaskedVariablesCaseData>
+          >();
+        }
+
+        if (dataState === "partial") {
+          expectTypeOf(data).toEqualTypeOf<
+            DeepPartial<MaskedVariablesCaseData>
+          >();
+        }
+
+        if (dataState === "empty") {
+          expectTypeOf(data).toEqualTypeOf<undefined>();
+        }
       }
     });
 
     it("returns correct TData type when combined options that do not affect TData", () => {
       const { query } = useVariablesQueryCase();
 
-      const { data: inferred } = useSuspenseQuery(query, {
-        fetchPolicy: "no-cache",
-        returnPartialData: true,
-        errorPolicy: "none",
-      });
+      {
+        const { data, dataState } = useSuspenseQuery(query, {
+          fetchPolicy: "no-cache",
+          returnPartialData: true,
+          errorPolicy: "none",
+          variables: { id: "1" },
+        });
 
-      expectTypeOf(inferred).toEqualTypeOf<DeepPartial<VariablesCaseData>>();
-      expectTypeOf(inferred).not.toEqualTypeOf<VariablesCaseData>();
+        expectTypeOf(data).toEqualTypeOf<
+          | VariablesCaseData
+          | DeepPartial<VariablesCaseData>
+          | DataValue.Streaming<VariablesCaseData>
+        >();
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "partial"
+        >();
 
-      const { data: explicit } = useSuspenseQuery<
-        VariablesCaseData,
-        VariablesCaseVariables
-      >(query, {
-        fetchPolicy: "no-cache",
-        returnPartialData: true,
-        errorPolicy: "none",
-      });
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<VariablesCaseData>();
+        }
 
-      expectTypeOf(explicit).toEqualTypeOf<DeepPartial<VariablesCaseData>>();
-      expectTypeOf(explicit).not.toEqualTypeOf<VariablesCaseData>();
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<VariablesCaseData>
+          >();
+        }
+
+        if (dataState === "partial") {
+          expectTypeOf(data).toEqualTypeOf<DeepPartial<VariablesCaseData>>();
+        }
+      }
+
+      {
+        const { data, dataState } = useSuspenseQuery<
+          VariablesCaseData,
+          VariablesCaseVariables
+        >(query, {
+          fetchPolicy: "no-cache",
+          returnPartialData: true,
+          errorPolicy: "none",
+          variables: { id: "1" },
+        });
+
+        expectTypeOf(data).toEqualTypeOf<
+          | VariablesCaseData
+          | DeepPartial<VariablesCaseData>
+          | DataValue.Streaming<VariablesCaseData>
+        >();
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "partial"
+        >();
+
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<VariablesCaseData>();
+        }
+
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<VariablesCaseData>
+          >();
+        }
+
+        if (dataState === "partial") {
+          expectTypeOf(data).toEqualTypeOf<DeepPartial<VariablesCaseData>>();
+        }
+      }
 
       const { query: maskedQuery } = useMaskedVariablesQueryCase();
 
       {
-        const { data } = useSuspenseQuery(maskedQuery, {
+        const { data, dataState } = useSuspenseQuery(maskedQuery, {
           fetchPolicy: "no-cache",
           returnPartialData: true,
           errorPolicy: "none",
+          variables: { id: "1" },
         });
 
         expectTypeOf(data).toEqualTypeOf<
-          DeepPartial<Masked<MaskedVariablesCaseData>>
+          | MaskedVariablesCaseData
+          | DeepPartial<MaskedVariablesCaseData>
+          | DataValue.Streaming<MaskedVariablesCaseData>
         >();
-        expectTypeOf(data).not.toEqualTypeOf<
-          DeepPartial<UnmaskedVariablesCaseData>
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "partial"
         >();
+
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData>();
+        }
+
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<MaskedVariablesCaseData>
+          >();
+        }
+
+        if (dataState === "partial") {
+          expectTypeOf(data).toEqualTypeOf<
+            DeepPartial<MaskedVariablesCaseData>
+          >();
+        }
       }
 
       {
-        const { data } = useSuspenseQuery<
+        const { data, dataState } = useSuspenseQuery<
           MaskedVariablesCaseData,
           VariablesCaseVariables
         >(maskedQuery, {
           fetchPolicy: "no-cache",
           returnPartialData: true,
           errorPolicy: "none",
+          variables: { id: "1" },
         });
 
         expectTypeOf(data).toEqualTypeOf<
-          DeepPartial<MaskedVariablesCaseData>
+          | MaskedVariablesCaseData
+          | DeepPartial<MaskedVariablesCaseData>
+          | DataValue.Streaming<MaskedVariablesCaseData>
         >();
-        expectTypeOf(data).not.toEqualTypeOf<
-          DeepPartial<UnmaskedVariablesCaseData>
+        expectTypeOf(dataState).toEqualTypeOf<
+          "complete" | "streaming" | "partial"
         >();
-      }
 
-      {
-        const { data } = useSuspenseQuery<
-          Masked<MaskedVariablesCaseData>,
-          VariablesCaseVariables
-        >(maskedQuery, {
-          fetchPolicy: "no-cache",
-          returnPartialData: true,
-          errorPolicy: "none",
-        });
+        if (dataState === "complete") {
+          expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData>();
+        }
 
-        expectTypeOf(data).toEqualTypeOf<
-          DeepPartial<Masked<MaskedVariablesCaseData>>
-        >();
-        expectTypeOf(data).not.toEqualTypeOf<
-          DeepPartial<UnmaskedVariablesCaseData>
-        >();
+        if (dataState === "streaming") {
+          expectTypeOf(data).toEqualTypeOf<
+            DataValue.Streaming<MaskedVariablesCaseData>
+          >();
+        }
+
+        if (dataState === "partial") {
+          expectTypeOf(data).toEqualTypeOf<
+            DeepPartial<MaskedVariablesCaseData>
+          >();
+        }
       }
     });
 
@@ -12780,27 +14366,19 @@ describe("useSuspenseQuery", () => {
       const { query, unmaskedQuery } = useMaskedVariablesQueryCase();
 
       {
-        const { refetch } = useSuspenseQuery(query);
+        const { refetch } = useSuspenseQuery(query, { variables: { id: "1" } });
+        const { data } = await refetch();
 
-        const result = await refetch();
-
-        expectTypeOf(result.data).toEqualTypeOf<
-          Masked<MaskedVariablesCaseData>
-        >();
-        expectTypeOf(
-          result.data
-        ).not.toEqualTypeOf<UnmaskedVariablesCaseData>();
+        expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData | undefined>();
       }
 
       {
-        const { refetch } = useSuspenseQuery(unmaskedQuery);
+        const { refetch } = useSuspenseQuery(unmaskedQuery, {
+          variables: { id: "1" },
+        });
+        const { data } = await refetch();
 
-        const result = await refetch();
-
-        expectTypeOf(result.data).toEqualTypeOf<MaskedVariablesCaseData>();
-        expectTypeOf(
-          result.data
-        ).not.toEqualTypeOf<UnmaskedVariablesCaseData>();
+        expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData | undefined>();
       }
     });
 
@@ -12808,59 +14386,42 @@ describe("useSuspenseQuery", () => {
       const { query, unmaskedQuery } = useMaskedVariablesQueryCase();
 
       {
-        const { fetchMore } = useSuspenseQuery(query);
+        const { fetchMore } = useSuspenseQuery(query, {
+          variables: { id: "1" },
+        });
 
-        const result = await fetchMore({
+        const { data } = await fetchMore({
           updateQuery: (queryData, { fetchMoreResult }) => {
             expectTypeOf(queryData).toEqualTypeOf<UnmaskedVariablesCaseData>();
             expectTypeOf(
-              queryData
-            ).not.toEqualTypeOf<MaskedVariablesCaseData>();
-
-            expectTypeOf(
               fetchMoreResult
             ).toEqualTypeOf<UnmaskedVariablesCaseData>();
-            expectTypeOf(
-              fetchMoreResult
-            ).not.toEqualTypeOf<MaskedVariablesCaseData>();
 
             return {} as UnmaskedVariablesCaseData;
           },
         });
 
-        expectTypeOf(result.data).toEqualTypeOf<
-          Masked<MaskedVariablesCaseData>
-        >();
-        expectTypeOf(
-          result.data
-        ).not.toEqualTypeOf<UnmaskedVariablesCaseData>();
+        expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData | undefined>();
       }
 
       {
-        const { fetchMore } = useSuspenseQuery(unmaskedQuery);
+        const { fetchMore } = useSuspenseQuery(unmaskedQuery, {
+          variables: { id: "1" },
+        });
 
-        const result = await fetchMore({
+        const { data } = await fetchMore({
           updateQuery: (queryData, { fetchMoreResult }) => {
             expectTypeOf(queryData).toEqualTypeOf<UnmaskedVariablesCaseData>();
-            expectTypeOf(
-              queryData
-            ).not.toEqualTypeOf<MaskedVariablesCaseData>();
 
             expectTypeOf(
               fetchMoreResult
             ).toEqualTypeOf<UnmaskedVariablesCaseData>();
-            expectTypeOf(
-              fetchMoreResult
-            ).not.toEqualTypeOf<MaskedVariablesCaseData>();
 
             return {} as UnmaskedVariablesCaseData;
           },
         });
 
-        expectTypeOf(result.data).toEqualTypeOf<MaskedVariablesCaseData>();
-        expectTypeOf(
-          result.data
-        ).not.toEqualTypeOf<UnmaskedVariablesCaseData>();
+        expectTypeOf(data).toEqualTypeOf<MaskedVariablesCaseData | undefined>();
       }
     });
 
@@ -12888,9 +14449,14 @@ describe("useSuspenseQuery", () => {
       const { query, unmaskedQuery } = useMaskedVariablesQueryCase();
 
       {
-        const { subscribeToMore } = useSuspenseQuery(query);
+        const { subscribeToMore } = useSuspenseQuery(query, {
+          variables: { id: "1" },
+        });
 
-        const subscription: MaskedDocumentNode<Subscription, never> = gql`
+        const subscription: TypedDocumentNode<
+          Subscription,
+          Record<string, never>
+        > = gql`
           subscription {
             pushLetter {
               id
@@ -12906,17 +14472,13 @@ describe("useSuspenseQuery", () => {
         subscribeToMore({
           document: subscription,
           updateQuery: (queryData, { subscriptionData }) => {
-            expectTypeOf(queryData).toEqualTypeOf<UnmaskedVariablesCaseData>();
-            expectTypeOf(
-              queryData
-            ).not.toEqualTypeOf<MaskedVariablesCaseData>();
+            expectTypeOf(queryData).toEqualTypeOf<
+              DeepPartial<UnmaskedVariablesCaseData>
+            >();
 
             expectTypeOf(
               subscriptionData.data
             ).toEqualTypeOf<UnmaskedSubscription>();
-            expectTypeOf(
-              subscriptionData.data
-            ).not.toEqualTypeOf<Subscription>();
 
             return {} as UnmaskedVariablesCaseData;
           },
@@ -12924,9 +14486,14 @@ describe("useSuspenseQuery", () => {
       }
 
       {
-        const { subscribeToMore } = useSuspenseQuery(unmaskedQuery);
+        const { subscribeToMore } = useSuspenseQuery(unmaskedQuery, {
+          variables: { id: "1" },
+        });
 
-        const subscription: TypedDocumentNode<Subscription, never> = gql`
+        const subscription: TypedDocumentNode<
+          Subscription,
+          Record<string, never>
+        > = gql`
           subscription {
             pushLetter {
               id
@@ -12945,10 +14512,9 @@ describe("useSuspenseQuery", () => {
             queryData,
             { subscriptionData, complete, previousData }
           ) => {
-            expectTypeOf(queryData).toEqualTypeOf<UnmaskedVariablesCaseData>();
-            expectTypeOf(
-              queryData
-            ).not.toEqualTypeOf<MaskedVariablesCaseData>();
+            expectTypeOf(queryData).toEqualTypeOf<
+              DeepPartial<UnmaskedVariablesCaseData>
+            >();
 
             expectTypeOf(complete).toEqualTypeOf<boolean>();
             expectTypeOf(previousData).toEqualTypeOf<
@@ -12970,14 +14536,314 @@ describe("useSuspenseQuery", () => {
             expectTypeOf(
               subscriptionData.data
             ).toEqualTypeOf<UnmaskedSubscription>();
-            expectTypeOf(
-              subscriptionData.data
-            ).not.toEqualTypeOf<Subscription>();
 
             return {} as UnmaskedVariablesCaseData;
           },
         });
       }
+    });
+
+    test("variables are optional and can be anything with an DocumentNode", () => {
+      const query = gql``;
+
+      useSuspenseQuery(query);
+      useSuspenseQuery(query, {});
+      useSuspenseQuery(query, { variables: {} });
+      useSuspenseQuery(query, { variables: { foo: "bar" } });
+      useSuspenseQuery(query, { variables: { bar: "baz" } });
+
+      let skip!: boolean;
+      useSuspenseQuery(query, skip ? skipToken : undefined);
+      useSuspenseQuery(query, skip ? skipToken : {});
+      useSuspenseQuery(query, skip ? skipToken : { variables: {} });
+      useSuspenseQuery(query, skip ? skipToken : { variables: { foo: "bar" } });
+      useSuspenseQuery(query, skip ? skipToken : { variables: { bar: "baz" } });
+    });
+
+    test("variables are optional and can be anything with unspecified TVariables on a TypedDocumentNode", () => {
+      const query: TypedDocumentNode<{ greeting: string }> = gql``;
+
+      useSuspenseQuery(query);
+      useSuspenseQuery(query, {});
+      useSuspenseQuery(query, { variables: {} });
+      useSuspenseQuery(query, { variables: { foo: "bar" } });
+      useSuspenseQuery(query, { variables: { bar: "baz" } });
+
+      let skip!: boolean;
+      useSuspenseQuery(query, skip ? skipToken : undefined);
+      useSuspenseQuery(query, skip ? skipToken : {});
+      useSuspenseQuery(query, skip ? skipToken : { variables: {} });
+      useSuspenseQuery(query, skip ? skipToken : { variables: { foo: "bar" } });
+      useSuspenseQuery(query, skip ? skipToken : { variables: { bar: "baz" } });
+    });
+
+    test("variables are optional when TVariables are empty", () => {
+      const query: TypedDocumentNode<
+        { greeting: string },
+        Record<string, never>
+      > = gql``;
+
+      useSuspenseQuery(query);
+      useSuspenseQuery(query, {});
+      useSuspenseQuery(query, { variables: {} });
+      useSuspenseQuery(query, {
+        variables: {
+          // @ts-expect-error unknown variables
+          foo: "bar",
+        },
+      });
+
+      let skip!: boolean;
+      useSuspenseQuery(query, skip ? skipToken : undefined);
+      useSuspenseQuery(query, skip ? skipToken : {});
+      useSuspenseQuery(query, skip ? skipToken : { variables: {} });
+      useSuspenseQuery(
+        query,
+        // @ts-expect-error unknown variables
+        skip ? skipToken : { variables: { foo: "bar" } }
+      );
+    });
+
+    test("is invalid when TVariables is `never`", () => {
+      const query: TypedDocumentNode<{ greeting: string }, never> = gql``;
+
+      // @ts-expect-error
+      useSuspenseQuery(query);
+      // @ts-expect-error
+      useSuspenseQuery(query, {});
+      useSuspenseQuery(query, {
+        // @ts-expect-error
+        variables: {},
+      });
+      useSuspenseQuery(query, {
+        // @ts-expect-error
+        variables: undefined,
+      });
+      useSuspenseQuery(query, {
+        // @ts-expect-error
+        variables: {
+          foo: "bar",
+        },
+      });
+
+      let skip!: boolean;
+      // @ts-expect-error
+      useSuspenseQuery(query, skip ? skipToken : undefined);
+      useSuspenseQuery(
+        query,
+        // @ts-expect-error
+        skip ? skipToken : {}
+      );
+      useSuspenseQuery(
+        query,
+        // @ts-expect-error
+        skip ? skipToken : { variables: {} }
+      );
+      useSuspenseQuery(
+        query,
+        // @ts-expect-error
+        skip ? skipToken : { variables: undefined }
+      );
+      useSuspenseQuery(
+        query,
+        // @ts-expect-error unknown variables
+        skip ? skipToken : { variables: { foo: "bar" } }
+      );
+    });
+
+    test("optional variables are optional", () => {
+      const query: TypedDocumentNode<{ posts: string[] }, { limit?: number }> =
+        gql``;
+
+      useSuspenseQuery(query);
+      useSuspenseQuery(query, {});
+      useSuspenseQuery(query, { variables: {} });
+      useSuspenseQuery(query, { variables: { limit: 10 } });
+      useSuspenseQuery(query, {
+        variables: {
+          // @ts-expect-error unknown variables
+          foo: "bar",
+        },
+      });
+      useSuspenseQuery(query, {
+        variables: {
+          limit: 10,
+          // @ts-expect-error unknown variables
+          foo: "bar",
+        },
+      });
+
+      let skip!: boolean;
+      useSuspenseQuery(query, skip ? skipToken : undefined);
+      useSuspenseQuery(query, skip ? skipToken : {});
+      useSuspenseQuery(query, skip ? skipToken : { variables: {} });
+      useSuspenseQuery(query, skip ? skipToken : { variables: { limit: 10 } });
+      useSuspenseQuery(
+        query,
+        skip ? skipToken : (
+          {
+            variables: {
+              // @ts-expect-error unknown variables
+              foo: "bar",
+            },
+          }
+        )
+      );
+      useSuspenseQuery(
+        query,
+        skip ? skipToken : (
+          {
+            variables: {
+              limit: 10,
+              // @ts-expect-error unknown variables
+              foo: "bar",
+            },
+          }
+        )
+      );
+    });
+
+    test("enforces required variables when TVariables includes required variables", () => {
+      const query: TypedDocumentNode<{ character: string }, { id: string }> =
+        gql``;
+
+      // @ts-expect-error empty variables
+      useSuspenseQuery(query);
+      // @ts-expect-error empty variables
+      useSuspenseQuery(query, {});
+      // @ts-expect-error empty variables
+      useSuspenseQuery(query, { variables: {} });
+      useSuspenseQuery(query, { variables: { id: "1" } });
+      useSuspenseQuery(query, {
+        variables: {
+          // @ts-expect-error unknown variables
+          foo: "bar",
+        },
+      });
+      useSuspenseQuery(query, {
+        variables: {
+          id: "1",
+          // @ts-expect-error unknown variables
+          foo: "bar",
+        },
+      });
+
+      let skip!: boolean;
+      // @ts-expect-error missing variables option
+      useSuspenseQuery(query, skip ? skipToken : undefined);
+      useSuspenseQuery(
+        query,
+        // @ts-expect-error missing variables option
+        skip ? skipToken : {}
+      );
+      useSuspenseQuery(
+        query,
+        // @ts-expect-error missing required variables
+        skip ? skipToken : { variables: {} }
+      );
+      useSuspenseQuery(query, skip ? skipToken : { variables: { id: "1" } });
+      useSuspenseQuery(
+        query,
+        skip ? skipToken : (
+          {
+            variables: {
+              // @ts-expect-error unknown variables
+              foo: "bar",
+            },
+          }
+        )
+      );
+      useSuspenseQuery(
+        query,
+        skip ? skipToken : (
+          {
+            variables: {
+              id: "1",
+              // @ts-expect-error unknown variables
+              foo: "bar",
+            },
+          }
+        )
+      );
+    });
+
+    test("requires variables with mixed TVariables", () => {
+      const query: TypedDocumentNode<
+        { character: string },
+        { id: string; language?: string }
+      > = gql``;
+
+      // @ts-expect-error empty variables
+      useSuspenseQuery(query);
+      // @ts-expect-error empty variables
+      useSuspenseQuery(query, {});
+      // @ts-expect-error empty variables
+      useSuspenseQuery(query, { variables: {} });
+      useSuspenseQuery(query, { variables: { id: "1" } });
+      useSuspenseQuery(query, {
+        // @ts-expect-error missing required variables
+        variables: { language: "en" },
+      });
+      useSuspenseQuery(query, { variables: { id: "1", language: "en" } });
+      useSuspenseQuery(query, {
+        variables: {
+          id: "1",
+          // @ts-expect-error unknown variables
+          foo: "bar",
+        },
+      });
+      useSuspenseQuery(query, {
+        variables: {
+          id: "1",
+          language: "en",
+          // @ts-expect-error unknown variables
+          foo: "bar",
+        },
+      });
+
+      let skip!: boolean;
+      // @ts-expect-error missing variables option
+      useSuspenseQuery(query, skip ? skipToken : undefined);
+      useSuspenseQuery(
+        query,
+        // @ts-expect-error missing variables option
+        skip ? skipToken : {}
+      );
+      useSuspenseQuery(
+        query,
+        // @ts-expect-error missing required variables
+        skip ? skipToken : { variables: {} }
+      );
+      useSuspenseQuery(query, skip ? skipToken : { variables: { id: "1" } });
+      useSuspenseQuery(
+        query,
+        skip ? skipToken : { variables: { id: "1", language: "en" } }
+      );
+      useSuspenseQuery(
+        query,
+        skip ? skipToken : (
+          {
+            variables: {
+              id: "1",
+              // @ts-expect-error unknown variables
+              foo: "bar",
+            },
+          }
+        )
+      );
+      useSuspenseQuery(
+        query,
+        skip ? skipToken : (
+          {
+            variables: {
+              id: "1",
+              language: "en",
+              // @ts-expect-error unknown variables
+              foo: "bar",
+            },
+          }
+        )
+      );
     });
   });
 });

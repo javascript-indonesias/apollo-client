@@ -43,24 +43,11 @@ export enum NetworkStatus {
    * No request is in flight for this query, but one or more errors were detected.
    */
   error = 8,
-}
 
-/**
- * Returns true if there is currently a network request in flight according to a given network
- * status.
- */
-export function isNetworkRequestInFlight(
-  networkStatus?: NetworkStatus
-): boolean {
-  return networkStatus ? networkStatus < 7 : false;
-}
-
-/**
- * Returns true if the network request is in ready or error state according to a given network
- * status.
- */
-export function isNetworkRequestSettled(
-  networkStatus?: NetworkStatus
-): boolean {
-  return networkStatus === 7 || networkStatus === 8;
+  /**
+   * Indicates that a `@defer` query has received at least the first chunk of
+   * the result but the full result has not yet been fully streamed to the
+   * client.
+   */
+  streaming = 9,
 }

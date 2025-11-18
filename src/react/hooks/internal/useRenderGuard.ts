@@ -1,11 +1,11 @@
-import * as React from "rehackt";
+import * as React from "react";
 
 let Ctx: React.Context<null>;
 
 function noop() {}
 export function useRenderGuard() {
   if (!Ctx) {
-    // we want the intialization to be lazy because `createContext` would error on import in a RSC
+    // we want the initialization to be lazy because `createContext` would error on import in a RSC
     Ctx = React.createContext(null);
   }
 

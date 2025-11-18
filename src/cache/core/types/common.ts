@@ -1,13 +1,13 @@
 import type { DocumentNode, FieldNode } from "graphql";
 
 import type {
+  AsStoreObject,
+  DeepPartial,
+  isReference,
   Reference,
   StoreObject,
   StoreValue,
-  isReference,
-  AsStoreObject,
-  DeepPartial,
-} from "../../../utilities/index.js";
+} from "@apollo/client/utilities";
 
 import type { StorageType } from "../../inmemory/policies.js";
 
@@ -35,6 +35,7 @@ export class MissingFieldError extends Error {
   ) {
     // 'Error' breaks prototype chain here
     super(message);
+    this.name = "MissingFieldError";
 
     if (Array.isArray(this.path)) {
       this.missing = this.message;
@@ -111,8 +112,8 @@ export type Modifier<T> = (
 ) => DeepPartial<T> | DeleteModifier | InvalidateModifier | undefined;
 
 type StoreObjectValueMaybeReference<StoreVal> =
-  StoreVal extends Array<Record<string, any>> ?
-    StoreVal extends Array<infer Item> ?
+  StoreVal extends ReadonlyArray<Record<string, any>> ?
+    StoreVal extends ReadonlyArray<infer Item> ?
       [Item] extends [Record<string, any>] ?
         ReadonlyArray<AsStoreObject<Item> | Reference>
       : never

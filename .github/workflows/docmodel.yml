@@ -1,0 +1,30 @@
+name: Generate Documentation Model
+
+on:
+  push:
+
+jobs:
+  docmodel:
+    name: Generate Documentation Model
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ">=23.6.0"
+
+      - name: Install dependencies (with cache)
+        uses: bahmutov/npm-install@v1
+
+      - name: Generate documentation model
+        run: npm run docmodel
+
+      - name: Upload documentation model artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: client-api-documentation
+          path: docs/public/client.api.json
+          retention-days: 30
